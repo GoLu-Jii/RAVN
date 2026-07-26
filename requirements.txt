@@ -1,0 +1,33 @@
+# Web framework
+fastapi
+uvicorn[standard]
+
+# Database / ORM
+sqlalchemy
+alembic
+psycopg2-binary
+
+# Auth
+passlib[bcrypt]
+python-jose[cryptography]
+python-multipart
+
+# Scheduler
+apscheduler
+
+# LLM
+groq
+
+# Scraping / fetching
+httpx
+beautifulsoup4
+feedparser
+trafilatura
+
+# PDF export
+weasyprint
+
+# Config & validation
+python-dotenv
+pydantic
+pydantic-settings
