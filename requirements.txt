@@ -8,8 +8,8 @@ alembic
 psycopg2-binary
 
 # Auth
-passlib[bcrypt]
-python-jose[cryptography]
+bcrypt
+pyjwt
 python-multipart
 
 # Scheduler
