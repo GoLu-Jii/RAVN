@@ -27,27 +27,26 @@ def verify_password(password: str, hashed_password: str)-> bool:
 
 
 
-
-# --------------------------02---------------------
-
+# -------------------------------02--------------------------
 secret_key = os.getenv("JWT_SECRET_KEY")
 algo = "HS256"
 
+# create 
 def create_access_token(user_id: str)-> str:
     payload = {
         "sub": user_id,
-        "exp": datetime.now(timezone.utc) - timedelta(seconds=10)
+        "exp": datetime.now(timezone.utc) + timedelta(seconds=10)
     }
 
     token = jwt.encode(payload, secret_key, algorithm=algo)
     return token
 
-
+# verify
 def verify_access_token(token: str) -> dict:
     decoded = jwt.decode(token, secret_key, algorithms=[algo])
     return decoded
 
-
+# test
 test_token = create_access_token("user01111")
 
 try:
