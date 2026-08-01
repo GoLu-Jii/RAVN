@@ -46,13 +46,13 @@ def verify_access_token(token: str) -> dict:
     decoded = jwt.decode(token, secret_key, algorithms=[algo])
     return decoded
 
-# test
-test_token = create_access_token("user01111")
+# # test
+# test_token = create_access_token("user01111")
 
-try:
-    res = verify_access_token(test_token)
-    print("SUCCESS:", res)
-except jwt.exceptions.ExpiredSignatureError:
-    print("Token expired")
-except jwt.exceptions.InvalidTokenError:
-    print("Invalid token")
+# try:
+#     res = verify_access_token(test_token)
+#     print("SUCCESS:", res)
+# except jwt.exceptions.ExpiredSignatureError:
+#     print("Token expired")
+# except jwt.exceptions.InvalidTokenError:
+#     print("Invalid token")
