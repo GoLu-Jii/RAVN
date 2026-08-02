@@ -44,7 +44,34 @@ Lists only what has been written and tested so far. No plans, no roadmap.
 
 ---
 
-## Working style notes (for Claude's reference across sessions)
-- Gaurav writes all code himself. Claude explains concepts, points at what to write,
-  reviews what's shared, asks debugging questions rather than handing over fixes.
-- Full code from Claude only when explicitly requested as an exception.
+## app/auth/routes.py
+- `router = APIRouter()`, mounted in `main.py` with `prefix="/auth"`.
+- `CreateUser` (Pydantic schema, inline in routes.py) — `email`, `password`.
+- `POST /auth/signup` — checks for existing email, hashes password via `hash_password()`,
+  inserts new `User` row, returns `{id, email}`. Tested via Swagger UI — confirmed
+  auto-increment `id` starts at 1, `password_hash` stored as real bcrypt hash (not plaintext).
+- `POST /auth/login` — looks up user by email, verifies password via `verify_password()`
+  against stored hash, issues JWT via `create_access_token()`. Returns
+  `{access_token, token_type: "bearer"}`. Deliberately returns the same generic
+  401 ("Invalid email or password") for both "no such user" and "wrong password",
+  to avoid leaking which one was wrong. Tested: correct login, wrong password,
+  nonexistent email — all confirmed working as expected.
+
+
+  ## app/auth/routes.py (update)
+- `oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")` — used only to extract
+  the token from the `Authorization` header; `/login` itself still accepts JSON
+  (`CreateUser` schema), not OAuth2 form data — deliberate choice, kept the API
+  JSON-based rather than distorting it to satisfy Swagger's built-in Authorize UI.
+- `GET /auth/me` — protected test route. Depends on `oauth2_scheme` to extract the
+  token, calls `verify_access_token()`, catches `ExpiredSignatureError` and
+  `InvalidTokenError` separately (distinct 401 messages), looks up the user by
+  `sub` claim, returns `{id, email}` only (password_hash excluded from response).
+  Tested end-to-end via PowerShell `Invoke-RestMethod`: login → capture token →
+  call `/me` with `Authorization: Bearer <token>` → correctly returns identified user.
+
+---
+
+## app/main.py
+- `FastAPI()` app instance, `auth_router` included with `prefix="/auth"`.
+- Verified working end-to-end via `/docs` Swagger UI.
