@@ -1,3 +1,5 @@
+# app.auth.utils.py
+
 import bcrypt
 import jwt
 from datetime import datetime, timezone, timedelta
@@ -45,4 +47,7 @@ def create_access_token(user_id: str)-> str:
 def verify_access_token(token: str) -> dict:
     decoded = jwt.decode(token, secret_key, algorithms=[algo])
     return decoded
+
+
+
 
