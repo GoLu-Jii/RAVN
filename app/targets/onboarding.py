@@ -57,7 +57,7 @@ def parse_response(answer_text):
     try:
         parsed = json.loads(answer_text)
     except json.JSONDecodeError:
-        return {"github": None, "ats": None, "blog": None, "web_social": None}
+        return {"github_url": None, "ats_url": None, "blog_url": None, "web_social_url": None}
 
     return parsed
 
@@ -81,16 +81,16 @@ def classify_links(links: list):
     Each link has a URL and its visible anchor text, in the form (url, text).
 
     Your task is to find, from this list, the single best URL for each of these four categories:
-    - "github": the company's GitHub organization or GitHub profile page
-    - "ats": a job board or careers page (e.g. Greenhouse, Lever, Ashby, Workable, or a "Careers"/"Jobs" page)
-    - "blog": the company's engineering or general blog
-    - "web_social": an official social media page (e.g. Twitter/X, LinkedIn) or product/updates page
+    - "github_url": the company's GitHub organization or GitHub profile page
+    - "ats_url": a job board or careers page (e.g. Greenhouse, Lever, Ashby, Workable, or a "Careers"/"Jobs" page)
+    - "blog_url": the company's engineering or general blog
+    - "web_social_url": an official social media page (e.g. Twitter/X, LinkedIn) or product/updates page
 
     Rules:
     - If no link in the list matches a category, set that field to null. Do not guess.
     - Only pick a link that is actually present in the given list — never invent a URL.
     - Respond with ONLY a JSON object in this exact shape, no other text:
-    {"github": "url or null", "ats": "url or null", "blog": "url or null", "web_social": "url or null"}
+    {"github_url": "url or null", "ats_url": "url or null", "blog_url": "url or null", "web_social_url": "url or null"}
     """
 
     message = [{"role": "system", "content": SYSTEM_PROMPT}]
@@ -110,4 +110,3 @@ def classify_links(links: list):
     refined_links = parse_response(answer_text)
 
     return refined_links
-
