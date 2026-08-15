@@ -1,9 +1,13 @@
-from app.targets.onboarding import discover_candidate_links, classify_links
+from app.kundali.builder import list_repos
 
-homepage_url = "https://stripe.com"
+# Organization-type account
+print("=== Testing Organization account ===")
+org_repos = list_repos("https://github.com/vercel", limit=5)
+for r in org_repos:
+    print(r)
 
-links = discover_candidate_links(homepage_url)
-print(f"Discovered {len(links)} links\n")
-
-result = classify_links(links)
-print(result)
+# User-type account (pick any solo dev's public GitHub URL)
+print("\n=== Testing User account ===")
+user_repos = list_repos("https://github.com/torvalds", limit=5)
+for r in user_repos:
+    print(r)
