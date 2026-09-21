@@ -36,14 +36,8 @@ whether it's a data problem or a DB-write problem.
 
 from app.kundali.builder import list_repos, get_commit_activity, get_languages, get_recent_commits
 
-from fastapi import FastAPI, APIRouter, HTTPException, Depends
-
 from app.db.database import get_db
-from app.db.base import Base
 from app.kundali.models import Kundali
-from app.auth.models import User
-
-from app.auth.routes import get_current_user
 
 
 def build_kundali(target_id: int, github_url: str):
@@ -52,45 +46,50 @@ def build_kundali(target_id: int, github_url: str):
 
     tech_stack = {}
     cadence_baseline = {}
-    recent_shifts = {}
+    recent_shifts = []   # FIX: was {} — you .append() to this later, so it must be a list from the start
 
     for repo in repos:
         owner = repo.get("owner")
-        name = repo.get("name")
+        name = repo.get("repo")   # already fixed by you — matches list_repos' actual key
 
         if not owner or not name:
-            continue 
+            continue
 
         langs = get_languages(owner, name) or {}
-        activity = get_commit_activity(owner, name) or []
+        activity = get_commit_activity(owner, name)   # NOTE: no `or []` here yet — see below
         recent_commits = get_recent_commits(owner, name) or []
 
         for lang, bytes_count in langs.items():
-            tech_stack[lang] = tech_stack.get(lang, 0) + bytes_count    
+            tech_stack[lang] = tech_stack.get(lang, 0) + bytes_count
 
-        for i, week in enumerate(activity[52]):
-            cadence_baseline[i] += week.get("total", 0)
+        # FIX: graceful degradation — skip cadence aggregation for this repo
+        # if activity failed (None) or came back empty, instead of crashing
+        if activity:
+            for i, week in enumerate(activity):   # FIX: enumerate(activity), not activity[51]
+                cadence_baseline[i] = cadence_baseline.get(i, 0) + week.get("total", 0)
+                # FIX: .get(i, 0) default — was cadence_baseline[i] += ... on an empty dict
 
         if recent_commits:
             recent_shifts.append({"repo": name, "recent_commits": len(recent_commits)})
 
     # write to db
-
     new_kundali = Kundali(
-        target_id = target_id,
-        tech_stack = tech_stack,    
-        cadence_baseline = cadence_baseline,
-        recent_shifts = recent_shifts,
-        focus_areas = None,
+        target_id=target_id,
+        tech_stack=tech_stack,
+        cadence_baseline=cadence_baseline,
+        recent_shifts=recent_shifts,
+        focus_areas=None,
     )
 
-    db = next(get_db())
-    db.add(new_kundali)
-    db.commit()
-    db.refresh(new_kundali)
+    db_gen = get_db()
+    db = next(db_gen)
+    try:
+        db.add(new_kundali)
+        db.commit()
+        db.refresh(new_kundali)
+    finally:
+        db_gen.close()   # FIX: actually drives the generator's `finally: db.close()` in get_db()
 
     return new_kundali
-
-
     
 

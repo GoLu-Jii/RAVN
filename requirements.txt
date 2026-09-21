@@ -23,6 +23,7 @@ httpx
 beautifulsoup4
 feedparser
 trafilatura
+requests
 
 # PDF export
 weasyprint

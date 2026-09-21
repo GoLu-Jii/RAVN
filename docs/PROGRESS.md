@@ -1,6 +1,6 @@
 # RAVN — Build Progress Tracker
 
-Last updated: 2026-07-30
+Last updated: 2026-09-19
 
 Lists only what has been written and tested so far. No plans, no roadmap.
 
@@ -15,7 +15,6 @@ Lists only what has been written and tested so far. No plans, no roadmap.
   needed since FastAPI can access a connection across threads).
 - `SessionLocal` — session factory (`sessionmaker(bind=engine)`).
 - `get_db()` — generator dependency function; yields a session, closes it in `finally`.
-  Not yet exercised by a real route (will be used via `Depends(get_db)`).
 
 ## app/auth/models.py
 - `User` model (SQLAlchemy 2.0 `mapped_column` style)
@@ -37,10 +36,8 @@ Lists only what has been written and tested so far. No plans, no roadmap.
 - `env.py` wired to real metadata: imports `Base` and `User` (import needed so `User`
   actually registers itself on `Base.metadata` before autogenerate runs),
   `target_metadata = Base.metadata`.
-- First migration generated and applied (`alembic revision --autogenerate` →
-  `alembic upgrade head`). Confirmed: `users` table physically exists in `ravn.db`
-  with correct columns/constraints. `alembic_version` table present (Alembic's own
-  migration-state bookkeeping).
+- First migration generated and applied. Confirmed: `users` table physically exists in
+  `ravn.db` with correct columns/constraints. `alembic_version` table present.
 
 ---
 
@@ -57,8 +54,7 @@ Lists only what has been written and tested so far. No plans, no roadmap.
   to avoid leaking which one was wrong. Tested: correct login, wrong password,
   nonexistent email — all confirmed working as expected.
 
-
-  ## app/auth/routes.py (update)
+## app/auth/routes.py (update)
 - `oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")` — used only to extract
   the token from the `Authorization` header; `/login` itself still accepts JSON
   (`CreateUser` schema), not OAuth2 form data — deliberate choice, kept the API
@@ -70,11 +66,24 @@ Lists only what has been written and tested so far. No plans, no roadmap.
   Tested end-to-end via PowerShell `Invoke-RestMethod`: login → capture token →
   call `/me` with `Authorization: Bearer <token>` → correctly returns identified user.
 
+## app/auth/routes.py (update 2)
+- `get_current_user` extracted from the `/me` route body into a standalone reusable
+  dependency function, so it can be imported and used by `targets/routes.py` (and future
+  protected routes) without duplicating the token-decode + user-lookup logic.
+- Swapped `OAuth2PasswordBearer` for `HTTPBearer` as the auth scheme. Reason: `/auth/login`
+  intentionally accepts JSON, not OAuth2 form data, which meant Swagger's built-in Authorize
+  UI (built around `OAuth2PasswordBearer`'s username/password form) couldn't actually
+  authenticate. `HTTPBearer` shows a plain token-paste field in Swagger instead, matching how
+  tokens are actually issued and used in this API.
+
 ---
 
 ## app/main.py
 - `FastAPI()` app instance, `auth_router` included with `prefix="/auth"`.
 - Verified working end-to-end via `/docs` Swagger UI.
+
+## app/main.py (update)
+- `targets_router` included with `prefix="/targets"`, alongside the existing `auth_router`.
 
 ---
 
@@ -129,15 +138,83 @@ Lists only what has been written and tested so far. No plans, no roadmap.
   `web_social_url`) — `classify_links`'s prompt and fallback dict updated to use the `_url`
   suffixed names throughout, matching `ConfirmTarget` and the DB columns.
 
-## app/auth/routes.py (update)
-- `get_current_user` extracted from the `/me` route body into a standalone reusable
-  dependency function, so it can be imported and used by `targets/routes.py` (and future
-  protected routes) without duplicating the token-decode + user-lookup logic.
-- Swapped `OAuth2PasswordBearer` for `HTTPBearer` as the auth scheme. Reason: `/auth/login`
-  intentionally accepts JSON, not OAuth2 form data, which meant Swagger's built-in Authorize
-  UI (built around `OAuth2PasswordBearer`'s username/password form) couldn't actually
-  authenticate. `HTTPBearer` shows a plain token-paste field in Swagger instead, matching how
-  tokens are actually issued and used in this API.
+---
 
-## app/main.py (update)
-- `targets_router` included with `prefix="/targets"`, alongside the existing `auth_router`.
+## app/kundali/builder.py
+- `extract_account_name(github_url)` / `get_account_type(name)` — resolves a GitHub URL to
+  an account name and branches on whether it's an `Org` or `User` account type via
+  `GET /users/{name}`, since orgs and users expose repos differently.
+- `list_repos(github_url, limit)` — fetches the account's public repos, capped at `limit`,
+  returns `[{"owner": ..., "repo": ..., "pushed_at": ...}, ...]`.
+- `get_commit_activity(owner, repo, max_retries=5, wait_seconds=2)` — fetches 52 weeks of
+  commit activity from `GET /repos/{owner}/{repo}/stats/commit_activity`. Retries only on
+  `202` (GitHub still computing stats), fixed wait between retries; any other non-200 status
+  fails immediately without retrying. Returns `None` if the repo never resolves out of `202`
+  (e.g. zero-commit repos never get cached), or `[]`/data on `200`. Two distinct failure
+  cases logged separately (network error vs. non-200 status vs. exhausted retries) so they're
+  distinguishable.
+- `get_recent_commits(owner, repo)` — last 45 days of commits via the `since` query param.
+- `get_languages(owner, repo)` — byte-count-per-language dict from the repo's `languages`
+  endpoint.
+- All five functions unit-tested in `tests/test.py` (run via `python -m tests.test`),
+  confirmed working against real GitHub orgs/users.
+
+## app/kundali/models.py
+- `Kundali` model — `id` (PK), `target_id` (FK → `targets.id`, one-to-one), `tech_stack`
+  (JSON), `focus_areas` (JSON, nullable), `cadence_baseline` (JSON), `recent_shifts` (JSON),
+  `created_at`.
+
+## Alembic (update 2)
+- Migration `b5922e36556c` — merged two divergent migration branches (target-side changes
+  had branched independently of the kundali work).
+- Migration `bed3128a8df6` — added the `kundali` table. `env.py` updated to import `Kundali`
+  so autogenerate detects it. Confirmed: `kundali` table exists in `ravn.db`, schema matches
+  the model 1:1, `alembic current` matches the latest migration file on disk (no drift).
+
+## app/kundali/synthesis.py
+- `build_kundali(target_id, github_url)` — orchestrates the Day-0 profile build:
+  1. `list_repos(github_url, limit=10)` for the target's repo subset.
+  2. Per repo: `get_languages`, `get_commit_activity`, `get_recent_commits`.
+  3. Aggregates `tech_stack` by summing byte-counts per language across all repos in the
+     subset.
+  4. Aggregates `cadence_baseline` by summing each week's commit total across all repos into
+     a single 52-slot dict keyed by week index.
+  5. Builds `recent_shifts` as a list of `{"repo": ..., "recent_commits": count}` entries for
+     repos with any commits in the last 45 days.
+  6. Writes one `Kundali` row via the existing `SessionLocal`/`get_db` pattern.
+- `focus_areas` deliberately stubbed as `None` for this pass — deferred until the two-LLM-pass
+  synthesis step from `IMPLEMENTATION_GUIDE.md` is built; raw-data aggregation is being
+  proven end-to-end first.
+- Partial-failure handling decided explicitly: if `get_commit_activity` returns `None`/`[]`
+  for a given repo, that repo is skipped for cadence aggregation only (not the whole build) —
+  matches the project's stated graceful-degradation principle. Other repos in the same subset
+  still contribute their `tech_stack` and `recent_shifts` data regardless.
+- Fixed three bugs found via static trace before first run (none of these were ever exercised
+  successfully, so nothing above was "working then broken" — this was the first correct run):
+  - `repo.get("name")` → `repo.get("repo")`, matching `list_repos`' actual key.
+  - `recent_shifts` initialized as `{}` but used with `.append()` → initialized as `[]`.
+  - `activity[51]` (single out-of-range week, iterated as dict keys) → `enumerate(activity)`
+    (all 52 weeks), with `cadence_baseline.get(i, 0)` instead of unguarded `+=` on an unset key.
+  - `db = next(get_db())` left the generator's `finally: db.close()` un-triggered → generator
+    now held and explicitly `.close()`d after commit/refresh.
+- Not yet done: no FastAPI route exposes `build_kundali` (not callable via API yet, only
+  directly). `focus_areas` LLM pass not started.
+
+## tests/test.py
+- Rewritten into a runner script covering the GitHub parsing layer:
+  `extract_account_name`, `get_account_type`, `list_repos`, `get_commit_activity`,
+  `get_recent_commits`, `get_languages`. Run via `python -m tests.test` from project root.
+
+---
+
+## Scaffolding (not yet implemented)
+Empty placeholder files exist for future components, created ahead of time to match the
+repo structure in `IMPLEMENTATION_GUIDE.md` — no logic written yet:
+- `app/config.py`
+- `app/llm/clients.py`
+- `app/export/pdf.py`
+- `app/scheduler/jobs.py`
+- `app/daily/collectors.py`, `app/daily/fetchers/{ats,blogs,github,socials}.py`
+- `app/events/models.py`, `app/events/routes.py`
+- `app/weekly/detector.py`, `app/weekly/models.py`,
+  `app/weekly/narrator/{analyst,critic,verifier,writer}.py`
