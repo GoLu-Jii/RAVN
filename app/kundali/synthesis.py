@@ -35,13 +35,18 @@ whether it's a data problem or a DB-write problem.
 
 
 from app.kundali.builder import list_repos, get_commit_activity, get_languages, get_recent_commits
+from app.daily.fetchers.ats import get_ats_postings
+from app.daily.fetchers.socials import get_web_social_content
+from app.daily.fetchers.blogs import get_blog_posts
 
 from app.db.database import get_db
 from app.kundali.models import Kundali
 
 
-def build_kundali(target_id: int, github_url: str):
+def build_kundali(target_id: int, github_url: str, ats_url: str | None = None, web_social_url: str | None = None, blog_url: str | None = None) -> Kundali:
 
+
+    # github repo check 
     repos = list_repos(github_url, limit=10) or []
 
     tech_stack = {}
@@ -72,12 +77,30 @@ def build_kundali(target_id: int, github_url: str):
         if recent_commits:
             recent_shifts.append({"repo": name, "recent_commits": len(recent_commits)})
 
+
+    # ats platform check 
+    postings = get_ats_postings(ats_url) if ats_url else []
+
+
+    # web social check
+    web_social = get_web_social_content(web_social_url) if web_social_url else None
+
+
+    # blog check
+    blog = get_blog_posts(blog_url) if blog_url else None
+
+
+    
+
     # write to db
     new_kundali = Kundali(
         target_id=target_id,
         tech_stack=tech_stack,
         cadence_baseline=cadence_baseline,
-        recent_shifts=recent_shifts,
+        recent_commits=recent_shifts,
+        ats_postings=postings,
+        web_social_status = web_social,
+        blog_status = blog,
         focus_areas=None,
     )
 

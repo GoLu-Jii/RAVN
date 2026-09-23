@@ -1,6 +1,6 @@
 from app.auth.routes import get_current_user
 
-from fastapi import Depends, HTTPException, APIRouter
+from fastapi import Depends, HTTPException, APIRouter, BackgroundTasks
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import select
@@ -11,6 +11,7 @@ from app.targets.models import Target
 from app.auth.models import User
 
 from app.targets.onboarding import discover_candidate_links, classify_links
+from app.kundali.synthesis import build_kundali
 
 
 
@@ -61,3 +62,5 @@ def confirm(target: ConfirmTarget, current_user: User = Depends(get_current_user
     db.refresh(new_target)
 
     return {"id": new_target.id, "name": new_target.name, "status": new_target.status}
+
+

@@ -13,10 +13,11 @@ class Kundali(Base):
     tech_stack: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     focus_areas: Mapped[dict | None] = mapped_column(JSON, nullable = True)
     cadence_baseline : Mapped[dict | None] = mapped_column(JSON, nullable= True)
-    recent_shifts : Mapped[dict | None] = mapped_column(JSON, nullable= True)
+    recent_commits : Mapped[dict | None] = mapped_column(JSON, nullable= True)
+    ats_postings : Mapped[list[dict] | None] = mapped_column(JSON, nullable= True)
+    web_social_status : Mapped[dict | None] = mapped_column(JSON, nullable= True)
+    blog_status : Mapped[dict | None] = mapped_column(JSON, nullable= True)
     created_at : Mapped[datetime] = mapped_column(DateTime(timezone = True), server_default= func.now())
-
-
 
 
 '''
