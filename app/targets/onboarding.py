@@ -3,9 +3,10 @@ import httpx
 from bs4 import BeautifulSoup
 
 import os
-from groq import Groq
 from dotenv import load_dotenv
 import json
+
+from app.llm import get_llm_client
 
 load_dotenv()
 
@@ -13,11 +14,16 @@ load_dotenv()
 FALLBACK_PATHS = ["/about", "/careers", "/blog"]
 
 
+_BROWSER_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+}
+
+
 def extract_links(url):
     links = []
 
     try:
-        response = httpx.get(url, timeout=10.0)
+        response = httpx.get(url, timeout=10.0, headers=_BROWSER_HEADERS, follow_redirects=True)
     except httpx.RequestError:
         return links
 
@@ -55,7 +61,15 @@ def discover_candidate_links(homepage_url):
 
 def parse_response(answer_text):
     try:
-        parsed = json.loads(answer_text)
+        text = answer_text.strip()
+        if text.startswith("```"):
+            lines = text.split("\n")
+            if lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].startswith("```"):
+                lines = lines[:-1]
+            text = "\n".join(lines).strip()
+        parsed = json.loads(text)
     except json.JSONDecodeError:
         return {"github_url": None, "ats_url": None, "blog_url": None, "web_social_url": None}
 
@@ -67,13 +81,7 @@ def parse_response(answer_text):
 def classify_links(links: list):
     link_text = json.dumps(links)
 
-    api = os.environ.get("GROQ_API_KEY")
-    if not api:
-        raise ValueError("API KEY not found!!!!")
-    
-    client = Groq(
-        api_key=api,
-    )
+    client = get_llm_client()
 
     user_prompt = [{"role": "user", "content": link_text}]
 
@@ -98,7 +106,6 @@ def classify_links(links: list):
 
 
     response = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
         messages=message,
         response_format={"type": "json_object"},
         temperature=0.1,

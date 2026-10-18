@@ -36,8 +36,9 @@ def get_account_type(name: str) -> str:
     return response.json()["type"]
 
 
-def list_repos(github_url: str, limit: int = 10) -> list[dict]:
-
+def list_repos(github_url: str | None, limit: int = 10) -> list[dict]:
+    if not github_url:
+        return []
 
     name = extract_account_name(github_url)
     account_type = get_account_type(name)
