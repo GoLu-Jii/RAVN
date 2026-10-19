@@ -1,6 +1,6 @@
 # RAVN — Build Progress Tracker
 
-Last updated: 2026-09-19
+Last updated: 2026-10-19
 
 Lists only what has been written and tested so far. No plans, no roadmap.
 
@@ -111,32 +111,77 @@ Lists only what has been written and tested so far. No plans, no roadmap.
   anchor/mailto links — confirmed correct resolution.
 - `discover_candidate_links(homepage_url)` — calls `extract_links` on the homepage plus a
   fixed fallback list (`/about`, `/careers`, `/blog`), merges all results (no dedup by
-  design — cost asymmetry favors simplicity over cleanup on Groq's free tier). Each page
-  fetched independently; one failing page doesn't stop the others.
-- `classify_links(links)` — sends the unfiltered link list to Groq (`llama-3.3-70b-versatile`,
-  JSON mode) with a system prompt instructing it to pick the best URL per category
-  (`github_url` / `ats_url` / `blog_url` / `web_social_url`) or `null` if none match, with
-  explicit "do not guess / never invent a URL" instructions. `parse_response` wraps
-  `json.loads` with a fallback to an all-null dict on `JSONDecodeError`.
+  design — cost asymmetry favors simplicity over cleanup on free tiers). Each page fetched
+  independently; one failing page doesn't stop the others.
+- `classify_links(links)` — sends the unfiltered link list to the shared LLM client
+  (`app.llm.get_llm_client()`, JSON mode) with a system prompt instructing it to pick the best URL
+  per category (`github_url` / `ats_url` / `blog_url` / `web_social_url`) or `null` if none match,
+  with explicit "do not guess / never invent a URL" instructions.
+- `parse_response(answer_text)` — wraps `json.loads` with a fallback to an all-null dict on
+  `JSONDecodeError`, and automatically strips markdown code fences (e.g. ```` ```json ... ``` ````)
+  before parsing so wrapped responses don't fail parsing.
 - Tested end-to-end: negative case (a company with no GitHub/ATS/blog links anywhere on
   homepage + fallback pages) correctly returned all four fields as `null`, no hallucination.
   Positive case (Stripe) correctly identified real GitHub, careers, blog, and X/Twitter URLs
-  from an unfiltered list of 558 candidate links.
+  from an unfiltered list of candidate links.
 
-## app/targets/routes.py
-- `POST /targets/preview` — takes `{website_url}`, runs `discover_candidate_links` →
-  `classify_links`, returns the four-field result. No DB write. Protected via
-  `Depends(get_current_user)`.
-- `POST /targets` — takes `{name, website_url, github_url, ats_url, blog_url,
-  web_social_url}` (the user-confirmed/corrected sources from the preview step), creates a
-  `Target` row scoped to `current_user.id`, returns `{id, name, status}`. Protected via
-  `Depends(get_current_user)`.
-- Both routes tested end-to-end via Swagger UI against Stripe: login → preview (correct
-  classification) → confirm (row created, `status: "building"`).
-- Fixed a naming mismatch between `preview`'s output keys and `ConfirmTarget`'s expected
-  fields (`github`/`ats`/`blog`/`web_social` vs `github_url`/`ats_url`/`blog_url`/
-  `web_social_url`) — `classify_links`'s prompt and fallback dict updated to use the `_url`
-  suffixed names throughout, matching `ConfirmTarget` and the DB columns.
+## app/targets/onboarding.py (update)
+- Added `_BROWSER_HEADERS` with a standard Chrome `User-Agent` to `extract_links`, and enabled
+  `follow_redirects=True` on `httpx.get`.
+  - Issue fixed: Target sites (e.g. Stripe) issue 307 temporary redirects to country subpaths
+    (`/in`) or enforce User-Agent checks, returning 0-byte responses when redirects were unfollowed.
+  - Confirmed: With browser headers and redirect following enabled, Stripe extraction jumped from
+    0 to 184 resolved links immediately.
+
+---
+
+## app/llm/clients.py & app/llm/__init__.py
+- Single shared multi-provider LLM client (`LLMClient`, `get_llm_client()`, `chat_completion`):
+  - **Primary Provider — OpenRouter**:
+    - Connects to OpenRouter's OpenAI-compatible completions API using `OPENROUTER_API_KEY`.
+    - Primary model: `liquid/lfm-2.5-2.6b:free` (0 cost on OpenRouter free tier).
+    - Multi-model fallback array: passes up to 3 candidate models in OpenRouter's native `models`
+      parameter (`["liquid/lfm-2.5-2.6b:free", "google/gemma-4-26b-a4b-it:free", "openrouter/free"]`).
+      OpenRouter automatically handles provider-side 429s or downtime by routing to the next model
+      in the list.
+    - Legacy model mapping: if a model without `/` is passed (e.g. `llama-3.3-70b-versatile`), it
+      safely maps to `DEFAULT_OPENROUTER_MODEL`.
+  - **Fallback 1 — Google Gemini**:
+    - Invoked automatically if OpenRouter fails (e.g. daily 50-request limit reached or network error).
+    - Uses Gemini REST API (`gemini-3.8-flash`) via `x-goog-api-key` header with `GEMINI_API_KEY`.
+    - Automatically sets `thinkingConfig: {"thinkingBudget": 0}` by default to prevent internal
+      reasoning tokens from exhausting max output token budgets on structured JSON extraction tasks.
+  - **Fallback 2 — Groq**:
+    - Secondary backup calling Groq API via `GROQ_API_KEY` (`qwen/qwen3.8-27b` / `llama-3.3-70b-versatile`).
+  - **Compatibility**:
+    - Exposes `client.chat.completions.create(...)` matching Groq/OpenAI signatures.
+    - Returns unified `LLMResponse` supporting `.choices[0].message.content`, `.content`, `.text`,
+      `.provider`, and `.model`.
+- Tested and verified:
+  - OpenRouter primary: returns classified links in ~2 seconds with HTTP 200 at 0 cost.
+  - Fallback failover: tested simulated failure of OpenRouter &rarr; successfully caught and fulfilled
+    via Gemini fallback.
+
+---
+
+## app/daily/fetchers/
+- Isolated fetchers for each external data source type:
+  - `app/daily/fetchers/ats.py`:
+    - `detect_ats_platform(ats_url)` — detects Greenhouse, Lever, Ashby, or Workable boards from URL.
+    - `_extract_board_token(ats_url)` — extracts the company board slug.
+    - `fetch_greenhouse_jobs`, `fetch_lever_jobs`, `fetch_ashbyhq_jobs`, `fetch_workable_jobs` —
+      queries public ATS board APIs, normalizes listings into `[{title, location, url, posted_at}]`.
+    - `get_ats_postings(ats_url)` — single entry point returning the list of active job postings.
+  - `app/daily/fetchers/socials.py`:
+    - `get_web_social_content(web_social_url)` — fetches public updates / social page via `httpx`
+      (10s timeout) and extracts clean body text using `trafilatura`. Filters out short (<50 chars)
+      or unextractable pages. Returns `{"url": ..., "content": ...}` or `None`.
+  - `app/daily/fetchers/blogs.py`:
+    - `discover_feed_url(blog_url)` — tests common feed paths (`/feed`, `/rss`, `/rss.xml`,
+      `/atom.xml`, `/feed.xml`), verifying HTTP 200 and XML Content-Type.
+    - `get_blog_posts(blog_url, max_posts=20)` — parses RSS/Atom entries via `feedparser`, fetches
+      each post URL with `httpx`, extracts body content via `trafilatura`, returns normalized
+      `[{title, link, published, content}]`.
 
 ---
 
@@ -160,9 +205,10 @@ Lists only what has been written and tested so far. No plans, no roadmap.
   confirmed working against real GitHub orgs/users.
 
 ## app/kundali/models.py
-- `Kundali` model — `id` (PK), `target_id` (FK → `targets.id`, one-to-one), `tech_stack`
-  (JSON), `focus_areas` (JSON, nullable), `cadence_baseline` (JSON), `recent_shifts` (JSON),
-  `created_at`.
+- `Kundali` model — `id` (PK), `target_id` (FK → `targets.id`, unique, one-to-one), `tech_stack`
+  (JSON), `focus_areas` (JSON, nullable), `cadence_baseline` (JSON), `recent_commits` (JSON),
+  `ats_postings` (JSON, nullable), `web_social_status` (JSON, nullable), `blog_status` (JSON, nullable),
+  `created_at` (DateTime, timezone-aware, server_default=func.now()).
 
 ## Alembic (update 2)
 - Migration `b5922e36556c` — merged two divergent migration branches (target-side changes
@@ -172,7 +218,8 @@ Lists only what has been written and tested so far. No plans, no roadmap.
   the model 1:1, `alembic current` matches the latest migration file on disk (no drift).
 
 ## app/kundali/synthesis.py
-- `build_kundali(target_id, github_url)` — orchestrates the Day-0 profile build:
+- `build_kundali(target_id, github_url, ats_url=None, web_social_url=None, blog_url=None)` —
+  orchestrates the Day-0 profile build:
   1. `list_repos(github_url, limit=10)` for the target's repo subset.
   2. Per repo: `get_languages`, `get_commit_activity`, `get_recent_commits`.
   3. Aggregates `tech_stack` by summing byte-counts per language across all repos in the
@@ -181,29 +228,44 @@ Lists only what has been written and tested so far. No plans, no roadmap.
      a single 52-slot dict keyed by week index.
   5. Builds `recent_shifts` as a list of `{"repo": ..., "recent_commits": count}` entries for
      repos with any commits in the last 45 days.
-  6. Writes one `Kundali` row via the existing `SessionLocal`/`get_db` pattern.
-- `focus_areas` deliberately stubbed as `None` for this pass — deferred until the two-LLM-pass
-  synthesis step from `IMPLEMENTATION_GUIDE.md` is built; raw-data aggregation is being
-  proven end-to-end first.
-- Partial-failure handling decided explicitly: if `get_commit_activity` returns `None`/`[]`
-  for a given repo, that repo is skipped for cadence aggregation only (not the whole build) —
-  matches the project's stated graceful-degradation principle. Other repos in the same subset
-  still contribute their `tech_stack` and `recent_shifts` data regardless.
-- Fixed three bugs found via static trace before first run (none of these were ever exercised
-  successfully, so nothing above was "working then broken" — this was the first correct run):
-  - `repo.get("name")` → `repo.get("repo")`, matching `list_repos`' actual key.
-  - `recent_shifts` initialized as `{}` but used with `.append()` → initialized as `[]`.
-  - `activity[51]` (single out-of-range week, iterated as dict keys) → `enumerate(activity)`
-    (all 52 weeks), with `cadence_baseline.get(i, 0)` instead of unguarded `+=` on an unset key.
-  - `db = next(get_db())` left the generator's `finally: db.close()` un-triggered → generator
-    now held and explicitly `.close()`d after commit/refresh.
-- Not yet done: no FastAPI route exposes `build_kundali` (not callable via API yet, only
-  directly). `focus_areas` LLM pass not started.
+  6. Fetches ATS postings via `get_ats_postings(ats_url)` if ATS URL present.
+  7. Fetches web/social updates via `get_web_social_content(web_social_url)` if social URL present.
+  8. Fetches recent blog posts via `get_blog_posts(blog_url)` if blog URL present.
+  9. Idempotent DB write: checks for existing `Kundali` row for `target_id`; updates existing
+     record or inserts new record, preventing unique constraint errors on re-runs.
+  10. Status management: flips `Target.status` from `"building"` &rarr; `"ready"` upon completion,
+      or `"failed"` with rollback if an unhandled error occurs.
+- Tested live on Target 2 (`stripe`): successfully generated Kundali with 19 languages in
+  `tech_stack`, 52-week `cadence_baseline`, 10 recent shift repos, and web social signal.
 
-## tests/test.py
-- Rewritten into a runner script covering the GitHub parsing layer:
-  `extract_account_name`, `get_account_type`, `list_repos`, `get_commit_activity`,
-  `get_recent_commits`, `get_languages`. Run via `python -m tests.test` from project root.
+---
+
+## app/targets/routes.py
+- `POST /targets/preview` — takes `{website_url}`, runs `discover_candidate_links` →
+  `classify_links`, returns the four-field result. No DB write. Protected via
+  `Depends(get_current_user)`.
+- `POST /targets` (`confirm`) — takes `{name, website_url, github_url, ats_url, blog_url,
+  web_social_url}`, creates a `Target` row with `status="building"`, enqueues
+  `background_tasks.add_task(build_kundali, ...)` to asynchronously generate the Day-0 Kundali
+  profile in the background, and returns `{id, name, status}` immediately. Protected via
+  `Depends(get_current_user)`.
+- `GET /targets` — lists all targets belonging to `current_user`. Protected via
+  `Depends(get_current_user)`.
+- `GET /targets/{target_id}` — returns target details and current build status (`building`,
+  `ready`, `failed`). Protected via `Depends(get_current_user)`.
+- `GET /targets/{target_id}/kundali` — returns the generated Kundali profile, or
+  `{"status": "building", "message": "Kundali profile is still building in background"}` if
+  in-progress, or 404 if not found. Protected via `Depends(get_current_user)`.
+
+---
+
+## Verification & Test Scripts
+- `tests/test.py` — GitHub parsing layer runner covering `extract_account_name`,
+  `get_account_type`, `list_repos`, `get_commit_activity`, `get_recent_commits`, `get_languages`.
+  Run via `python -m tests.test`.
+- `tests/retest.py` — End-to-end database verification script: queries the database for target
+  profiles and prints all six Kundali fields (`tech_stack`, `cadence_baseline`, `recent_commits`,
+  `ats_postings`, `web_social_status`, `blog_status`). Run via `python -m tests.retest`.
 
 ---
 
@@ -211,10 +273,9 @@ Lists only what has been written and tested so far. No plans, no roadmap.
 Empty placeholder files exist for future components, created ahead of time to match the
 repo structure in `IMPLEMENTATION_GUIDE.md` — no logic written yet:
 - `app/config.py`
-- `app/llm/clients.py`
 - `app/export/pdf.py`
 - `app/scheduler/jobs.py`
-- `app/daily/collectors.py`, `app/daily/fetchers/{ats,blogs,github,socials}.py`
+- `app/daily/collectors.py`, `app/daily/fetchers/github.py`
 - `app/events/models.py`, `app/events/routes.py`
 - `app/weekly/detector.py`, `app/weekly/models.py`,
   `app/weekly/narrator/{analyst,critic,verifier,writer}.py`

@@ -41,9 +41,11 @@ from app.daily.fetchers.blogs import get_blog_posts
 
 from app.db.database import get_db
 from app.kundali.models import Kundali
+from app.targets.models import Target
+from app.auth.models import User
 
 
-def build_kundali(target_id: int, github_url: str, ats_url: str | None = None, web_social_url: str | None = None, blog_url: str | None = None) -> Kundali:
+def build_kundali(target_id: int, github_url: str | None = None, ats_url: str | None = None, web_social_url: str | None = None, blog_url: str | None = None) -> Kundali:
 
 
     # github repo check 
@@ -93,26 +95,48 @@ def build_kundali(target_id: int, github_url: str, ats_url: str | None = None, w
     
 
     # write to db
-    new_kundali = Kundali(
-        target_id=target_id,
-        tech_stack=tech_stack,
-        cadence_baseline=cadence_baseline,
-        recent_commits=recent_shifts,
-        ats_postings=postings,
-        web_social_status = web_social,
-        blog_status = blog,
-        focus_areas=None,
-    )
-
     db_gen = get_db()
     db = next(db_gen)
     try:
-        db.add(new_kundali)
-        db.commit()
-        db.refresh(new_kundali)
-    finally:
-        db_gen.close()   # FIX: actually drives the generator's `finally: db.close()` in get_db()
+        existing = db.query(Kundali).filter(Kundali.target_id == target_id).first()
+        if existing:
+            existing.tech_stack = tech_stack
+            existing.cadence_baseline = cadence_baseline
+            existing.recent_commits = recent_shifts
+            existing.ats_postings = postings
+            existing.web_social_status = web_social
+            existing.blog_status = blog
+            target_kundali = existing
+        else:
+            target_kundali = Kundali(
+                target_id=target_id,
+                tech_stack=tech_stack,
+                cadence_baseline=cadence_baseline,
+                recent_commits=recent_shifts,
+                ats_postings=postings,
+                web_social_status=web_social,
+                blog_status=blog,
+                focus_areas=None,
+            )
+            db.add(target_kundali)
 
-    return new_kundali
+        # Update target status to ready
+        target = db.query(Target).filter(Target.id == target_id).first()
+        if target:
+            target.status = "ready"
+
+        db.commit()
+        db.refresh(target_kundali)
+    except Exception as e:
+        db.rollback()
+        target = db.query(Target).filter(Target.id == target_id).first()
+        if target:
+            target.status = "failed"
+            db.commit()
+        raise e
+    finally:
+        db_gen.close()
+
+    return target_kundali
     
 
