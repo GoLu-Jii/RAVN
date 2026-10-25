@@ -16,7 +16,7 @@ DEFAULT_OPENROUTER_FALLBACKS = [
     "openrouter/free",
 ]
 
-DEFAULT_GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+DEFAULT_GROQ_MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
 DEFAULT_GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
 
 
@@ -101,10 +101,15 @@ def _call_openrouter(
         "X-Title": kwargs.get("x_title", "RAVN"),
     }
 
-    # OpenRouter supports up to 3 fallback models in the 'models' parameter
-    fallback_models = list(DEFAULT_OPENROUTER_FALLBACKS)
-    if target_model not in fallback_models:
-        fallback_models = [target_model] + fallback_models[:2]
+    # OpenRouter supports up to 3 fallback models in the 'models' parameter.
+    # Pass no_fallbacks=True to skip the fallback array and try only the exact model.
+    no_fallbacks = kwargs.get("no_fallbacks", False)
+    if no_fallbacks:
+        fallback_models = [target_model]
+    else:
+        fallback_models = list(DEFAULT_OPENROUTER_FALLBACKS)
+        if target_model not in fallback_models:
+            fallback_models = [target_model] + fallback_models[:2]
 
     payload: Dict[str, Any] = {
         "model": target_model,
@@ -257,7 +262,9 @@ def _call_groq(
     if response_format:
         call_params["response_format"] = response_format
 
-    for k, v in kwargs.items():
+    # Strip internal kwargs that shouldn't be forwarded to the Groq SDK
+    groq_kwargs = {k: v for k, v in kwargs.items() if k not in ("no_fallbacks", "http_referer", "x_title", "timeout")}
+    for k, v in groq_kwargs.items():
         if k not in call_params:
             call_params[k] = v
 
@@ -320,65 +327,78 @@ class LLMClient:
         response_format: Optional[Dict[str, str]] = None,
         temperature: float = 0.1,
         max_tokens: int = 1024,
+        provider: Optional[str] = None,
         **kwargs: Any,
     ) -> LLMResponse:
         """
-        Execute completion with OpenRouter as primary.
-        Falls back to Gemini/Groq if OpenRouter fails.
+        Execute completion with provider routing and automatic fallback.
+        Provider can be explicitly specified ("groq", "gemini", "openrouter")
+        or auto-detected from the model name.
         """
-        openrouter_model = model or self.primary_model
-        openrouter_error = None
+        # Auto-detect provider if model name matches known endpoints
+        if not provider and model:
+            if model in ("openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.8-27b"):
+                provider = "groq"
+            elif model.startswith("gemini"):
+                provider = "gemini"
 
-        # 1. Primary: OpenRouter
-        try:
-            logger.debug(f"Attempting OpenRouter primary ({openrouter_model})...")
+        # Define call wrappers for each provider
+        def call_openrouter():
+            target_model = model if (provider in (None, "openrouter")) else DEFAULT_OPENROUTER_MODEL
+            logger.debug(f"Attempting OpenRouter ({target_model})...")
             return _call_openrouter(
                 messages=messages,
-                model=openrouter_model,
+                model=target_model,
                 response_format=response_format,
                 temperature=temperature,
                 max_tokens=max_tokens,
                 **kwargs,
             )
-        except Exception as e:
-            openrouter_error = e
-            logger.warning(
-                f"OpenRouter primary failed: {e}. Falling back to backup providers..."
-            )
 
-        # 2. Fallback 1: Gemini
-        try:
-            gemini_response = _call_gemini(
+        def call_gemini():
+            target_model = model if (provider == "gemini") else DEFAULT_GEMINI_MODEL
+            logger.debug(f"Attempting Gemini ({target_model})...")
+            return _call_gemini(
                 messages=messages,
-                model=DEFAULT_GEMINI_MODEL,
+                model=target_model,
                 response_format=response_format,
                 temperature=temperature,
                 max_tokens=max_tokens,
                 **kwargs,
             )
-            logger.info("Gemini backup provider succeeded.")
-            return gemini_response
-        except Exception as gemini_error:
-            logger.warning(f"Gemini backup failed: {gemini_error}")
 
-        # 3. Fallback 2: Groq
-        try:
-            groq_response = _call_groq(
+        def call_groq():
+            target_model = model if (provider == "groq") else DEFAULT_GROQ_MODEL
+            logger.debug(f"Attempting Groq ({target_model})...")
+            return _call_groq(
                 messages=messages,
-                model=DEFAULT_GROQ_MODEL,
+                model=target_model,
                 response_format=response_format,
                 temperature=temperature,
                 max_tokens=max_tokens,
                 **kwargs,
             )
-            logger.info("Groq backup provider succeeded.")
-            return groq_response
-        except Exception as groq_error:
-            logger.error(f"All LLM providers failed. Groq: {groq_error}")
 
-        raise LLMError(
-            f"All LLM providers failed. OpenRouter: {openrouter_error}"
-        )
+        # Determine attempt order based on requested provider
+        if provider == "groq":
+            pipeline = [("Groq", call_groq), ("Gemini", call_gemini), ("OpenRouter", call_openrouter)]
+        elif provider == "gemini":
+            pipeline = [("Gemini", call_gemini), ("Groq", call_groq), ("OpenRouter", call_openrouter)]
+        else:
+            pipeline = [("OpenRouter", call_openrouter), ("Gemini", call_gemini), ("Groq", call_groq)]
+
+        errors = []
+        for name, fn in pipeline:
+            try:
+                resp = fn()
+                if name != pipeline[0][0]:
+                    logger.info(f"{name} backup provider succeeded.")
+                return resp
+            except Exception as e:
+                errors.append(f"{name}: {e}")
+                logger.warning(f"{name} failed: {e}. Falling back...")
+
+        raise LLMError(f"All LLM providers failed: {'; '.join(errors)}")
 
 
 # Global shared instance

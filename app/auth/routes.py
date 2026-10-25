@@ -23,7 +23,11 @@ class CreateUser(BaseModel):
 
 
 
-@router.post("/signup")
+@router.post(
+    "/signup",
+    summary="1. Register user",
+    description="Creates a new account. Required first if you don't have login credentials.",
+)
 def signup(user: CreateUser, db: Session = Depends(get_db)):
 
     existing_user = db.query(User).filter(User.email == user.email).first()
@@ -45,7 +49,11 @@ def signup(user: CreateUser, db: Session = Depends(get_db)):
 
 
 
-@router.post("/login")
+@router.post(
+    "/login",
+    summary="2. Login & get JWT token",
+    description="Returns bearer access_token. Copy it and click 'Authorize' at the top of Swagger UI.",
+)
 def login(user: CreateUser, db: Session = Depends(get_db)):
 
     existing_user = db.query(User).filter(User.email == user.email).first()
@@ -78,6 +86,10 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
 
 
 
-@router.get("/me")
+@router.get(
+    "/me",
+    summary="3. Verify authenticated user",
+    description="Tests your bearer token and returns current user details.",
+)
 def read_me(current_user: User = Depends(get_current_user)):
     return {"id": current_user.id, "email": current_user.email}

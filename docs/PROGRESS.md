@@ -218,6 +218,18 @@ Lists only what has been written and tested so far. No plans, no roadmap.
   the model 1:1, `alembic current` matches the latest migration file on disk (no drift).
 
 ## app/kundali/synthesis.py
+- `_synthesize_focus_areas(tech_stack, cadence_baseline, recent_shifts, ats_postings, web_social, blog)` —
+  LLM synthesis pass that derives `focus_areas` from the aggregated raw signals:
+  - Trims payload to signal-bearing data only: top 8 langs by byte-count, repos sorted by
+    recent commit volume, up to 30 ATS job titles, 15 blog titles, 400-char social snippet.
+  - Calls `chat_completion()` with `model="openai/gpt-oss-120b"` and smart provider
+    fallback across Groq, Gemini (`gemini-3.8-flash`), and OpenRouter, with
+    `response_format={"type": "json_object"}`, `temperature=0.4`, `max_tokens=1024`.
+  - System prompt instructs the LLM to identify connections between signals (GitHub repos/commits,
+    job board postings, blog, social) to identify 3 to 5 concrete strategic investment themes
+    with reasoning: `{"focus_areas": [...], "rationale": "..."}`.
+  - Graceful degradation: any LLM failure is caught and logged; returns `None` so the
+    DB write proceeds without crashing the whole build.
 - `build_kundali(target_id, github_url, ats_url=None, web_social_url=None, blog_url=None)` —
   orchestrates the Day-0 profile build:
   1. `list_repos(github_url, limit=10)` for the target's repo subset.
@@ -228,15 +240,22 @@ Lists only what has been written and tested so far. No plans, no roadmap.
      a single 52-slot dict keyed by week index.
   5. Builds `recent_shifts` as a list of `{"repo": ..., "recent_commits": count}` entries for
      repos with any commits in the last 45 days.
-  6. Fetches ATS postings via `get_ats_postings(ats_url)` if ATS URL present.
+  6. Fetches ATS postings via `get_ats_postings(ats_url)`: supports Greenhouse/Lever/Ashby/Workable APIs
+     and automatically falls back to scraping job listing cards directly from company-hosted careers pages.
   7. Fetches web/social updates via `get_web_social_content(web_social_url)` if social URL present.
-  8. Fetches recent blog posts via `get_blog_posts(blog_url)` if blog URL present.
-  9. Idempotent DB write: checks for existing `Kundali` row for `target_id`; updates existing
-     record or inserts new record, preventing unique constraint errors on re-runs.
-  10. Status management: flips `Target.status` from `"building"` &rarr; `"ready"` upon completion,
+  8. Fetches recent blog posts via `get_blog_posts(blog_url)`: auto-discovers RSS/Atom feeds
+     and falls back to extracting article cards and full text via `trafilatura` when no RSS feed exists.
+   9. **LLM synthesis** — calls `_synthesize_focus_areas()` with the aggregated data to derive
+      `focus_areas`. Uses `openai/gpt-oss-120b` with automated cross-provider fallback. Failure is
+      gracefully degraded (writes `None` to `focus_areas` rather than crashing the whole build).
+  10. Idempotent DB write: checks for existing `Kundali` row for `target_id`; updates all
+      fields including `focus_areas` on existing records, or inserts a new record.
+  11. Status management: flips `Target.status` from `"building"` &rarr; `"ready"` upon completion,
       or `"failed"` with rollback if an unhandled error occurs.
-- Tested live on Target 2 (`stripe`): successfully generated Kundali with 19 languages in
-  `tech_stack`, 52-week `cadence_baseline`, 10 recent shift repos, and web social signal.
+- Tested live on Target 4 (`stripe`): successfully generated full Kundali across all 4 channels:
+  `tech_stack` (14 langs), `cadence_baseline` (52 weeks), `recent_commits` (10 repos), `ats_postings`
+  (active roles), `blog_status` (recent articles), `web_social_status`, and multi-source
+  synthesized `focus_areas`.
 
 ---
 
@@ -245,10 +264,11 @@ Lists only what has been written and tested so far. No plans, no roadmap.
   `classify_links`, returns the four-field result. No DB write. Protected via
   `Depends(get_current_user)`.
 - `POST /targets` (`confirm`) — takes `{name, website_url, github_url, ats_url, blog_url,
-  web_social_url}`, creates a `Target` row with `status="building"`, enqueues
-  `background_tasks.add_task(build_kundali, ...)` to asynchronously generate the Day-0 Kundali
-  profile in the background, and returns `{id, name, status}` immediately. Protected via
-  `Depends(get_current_user)`.
+  web_social_url}` with optional `?sync=true` query parameter.
+  - When `sync=false` (default): creates `Target` row with `status="building"`, enqueues
+    `background_tasks.add_task(build_kundali, ...)`, and returns `{id, name, status}` immediately.
+  - When `sync=true`: creates target and runs `build_kundali` synchronously, returning the target
+    together with the complete generated Kundali profile. Protected via `Depends(get_current_user)`.
 - `GET /targets` — lists all targets belonging to `current_user`. Protected via
   `Depends(get_current_user)`.
 - `GET /targets/{target_id}` — returns target details and current build status (`building`,
@@ -256,6 +276,9 @@ Lists only what has been written and tested so far. No plans, no roadmap.
 - `GET /targets/{target_id}/kundali` — returns the generated Kundali profile, or
   `{"status": "building", "message": "Kundali profile is still building in background"}` if
   in-progress, or 404 if not found. Protected via `Depends(get_current_user)`.
+- `POST /targets/{target_id}/kundali/build` — synchronously builds or refreshes the Kundali
+  profile for `target_id` using its saved URLs directly from the database. **Requires zero request body.**
+  Protected via `Depends(get_current_user)`.
 
 ---
 

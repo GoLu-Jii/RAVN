@@ -18,8 +18,8 @@ ravn/
 │   │
 │   ├── kundali/
 │   │   ├── models.py           # KundaliProfile model
-│   │   ├── builder.py          # orchestrates the 3-track GitHub + ATS + blog + web gather
-│   │   └── synthesis.py        # the two LLM passes (baseline, recent-shift)
+│   │   ├── builder.py          # GitHub-only fetchers (list_repos, get_languages, get_commit_activity, get_recent_commits)
+│   │   └── synthesis.py        # orchestrates all 4 data tracks, aggregates, DB write; LLM synthesis pass (focus_areas) not yet implemented
 │   │
 │   ├── daily/
 │   │   ├── collectors.py       # scheduled daily job, per-source fetchers
@@ -49,7 +49,7 @@ ravn/
 │   │   └── jobs.py             # APScheduler setup, registers daily/weekly jobs
 │   │
 │   ├── llm/
-│   │   └── clients.py          # single shared wrapper around Groq API calls
+│   │   └── clients.py          # multi-provider LLM client: OpenRouter (primary) → Gemini (fallback 1) → Groq (fallback 2)
 │   │
 │   └── db/
 │       ├── database.py         # SQLAlchemy engine/session setup
@@ -89,7 +89,7 @@ Automated competitive intelligence for tech & AI companies. RAVN watches a targe
 | Database | PostgreSQL |
 | ORM / migrations | SQLAlchemy + Alembic |
 | Scheduler | APScheduler |
-| LLM | Groq (free tier) |
+| LLM | OpenRouter (primary, free tier) → Gemini → Groq (fallbacks) |
 | Auth | passlib (bcrypt) + python-jose / pyjwt + FastAPI `OAuth2PasswordBearer` |
 | Scraping / fetching | httpx, BeautifulSoup4, feedparser, trafilatura |
 | PDF export | WeasyPrint |

@@ -20,8 +20,10 @@ def _get_headers() -> dict:
 
 
 def extract_account_name(github_url: str) -> str:
-
-    path = urlparse(github_url).path 
+    url = github_url.strip()
+    if not (url.startswith("http://") or url.startswith("https://")):
+        url = f"https://{url}"
+    path = urlparse(url).path 
     return path.strip("/").split("/")[0]
 
 

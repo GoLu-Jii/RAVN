@@ -19,8 +19,22 @@ _BROWSER_HEADERS = {
 }
 
 
+def normalize_url(url: str | None) -> str | None:
+    if not url:
+        return url
+    url = url.strip()
+    if not url:
+        return url
+    if not (url.startswith("http://") or url.startswith("https://")):
+        return f"https://{url}"
+    return url
+
+
 def extract_links(url):
     links = []
+    url = normalize_url(url)
+    if not url:
+        return links
 
     try:
         response = httpx.get(url, timeout=10.0, headers=_BROWSER_HEADERS, follow_redirects=True)
@@ -46,6 +60,9 @@ def extract_links(url):
 
 def discover_candidate_links(homepage_url):
     all_links = []
+    homepage_url = normalize_url(homepage_url)
+    if not homepage_url:
+        return []
 
     urls_to_try = [homepage_url]
     for path in FALLBACK_PATHS:

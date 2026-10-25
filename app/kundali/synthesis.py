@@ -1,48 +1,95 @@
-'''
-What this function needs to do
-
-Something like build_kundali_profile(target_id, github_url) in kundali/builder.py, doing, in order:
-
-Call list_repos(github_url, limit=N) — get your capped repo subset for this target.
-For each repo in that subset, call get_commit_activity, get_recent_commits, and get_languages.
-Aggregate across the subset:
-tech_stack — sum (or however you decided) the language byte-counts across all repos into one combined dict
-cadence_baseline — combine the 52-week commit activity across repos (this is the shape decision I flagged earlier — 
-per-repo breakdown vs. summed weekly totals)
-recent_shifts — something derived from the 45-day recent commits (e.g. which categories/repos saw unusual recent activity 
-relative to baseline — though full "shift detection" logic might be more than you want in this pass)
-focus_areas — this one's not GitHub-derivable at all from what you've built; it likely needs the LLM synthesis step your 
-IMPLEMENTATION_GUIDE.md mentions (kundali/synthesis.py, "two LLM passes"). Worth deciding: are you doing that now, or 
-stubbing focus_areas as null/empty for this pass and coming back to it once the raw-data aggregation works end to end?
-Write one Kundali row to the DB via SQLAlchemy, using your existing SessionLocal/get_db pattern from auth.
-A real design question before you write this
-
-Partial failure handling. Say a target has 10 repos in its subset, and get_commit_activity returns None for 2 of them 
-(still-202-after-retries or some other failure). Does the whole Kundali build fail, or do you skip those 2 and aggregate 
-from the other 8? Given your stated "graceful degradation" principle throughout the whole project, skipping-and-continuing
-is almost certainly the right call — but you should decide explicitly and write the skip logic on purpose, not have it 
-happen accidentally because of how the aggregation loop is structured.
-
-Suggested order to build it in
-
-Given your "write everything, test at the end" style — I'd still suggest writing this one function in two visible stages 
-even if you test them together: first the gather-and-aggregate logic (steps 1–3, returning a plain dict, no DB yet) so you 
-can print/inspect it standalone, then the DB-write step (step 4) on top. That way if something's wrong, you know immediately 
-whether it's a data problem or a DB-write problem.
-
-'''
-
-
+import json
 
 from app.kundali.builder import list_repos, get_commit_activity, get_languages, get_recent_commits
 from app.daily.fetchers.ats import get_ats_postings
 from app.daily.fetchers.socials import get_web_social_content
 from app.daily.fetchers.blogs import get_blog_posts
+from app.llm import chat_completion
 
 from app.db.database import get_db
 from app.kundali.models import Kundali
 from app.targets.models import Target
 from app.auth.models import User
+
+KUNDALI_SYNTHESIS_MODEL = "openai/gpt-oss-120b"
+
+
+
+def _synthesize_focus_areas(
+    tech_stack: dict,
+    cadence_baseline: dict,
+    recent_shifts: list,
+    ats_postings: list,
+    web_social: dict | None,
+    blog: list | None,
+) -> dict | None:
+    """
+    LLM synthesis pass: takes the aggregated raw kundali signals and
+    returns a structured dict:
+        {
+            "focus_areas": ["...", ...],   # top 3-5 investment themes
+            "rationale": "..."              # one-paragraph reasoning
+        }
+
+    Returns None gracefully if the LLM call fails, so the DB write
+    can still proceed with focus_areas=None rather than crashing the
+    whole build.
+    """
+    # Build a compact payload — trim raw data to what's actually signal-bearing
+    top_langs = sorted(tech_stack.items(), key=lambda x: x[1], reverse=True)[:8]
+    lang_summary = {lang: bytes_count for lang, bytes_count in top_langs}
+
+    active_repos = [
+        {"repo": r["repo"], "recent_commits": r["recent_commits"]}
+        for r in sorted(recent_shifts, key=lambda x: x["recent_commits"], reverse=True)
+    ]
+
+    ats_titles = [p["title"] for p in (ats_postings or [])]
+
+    blog_titles = [p["title"] for p in (blog or [])] if isinstance(blog, list) else []
+
+    social_snippet = None
+    if web_social and web_social.get("content"):
+        social_snippet = web_social["content"][:400]
+
+    payload = {
+        "tech_stack_top8_by_bytes": lang_summary,
+        "recent_active_repos_45d": active_repos,
+        "ats_job_titles": ats_titles[:30],
+        "blog_post_titles": blog_titles[:15],
+        "web_social_snippet": social_snippet,
+    }
+
+    system_prompt = (
+        "You are a competitive intelligence analyst. "
+        "Given raw public signals from a tech company's GitHub, job board, blog, and social media, "
+        "identify their top 3 to 5 current strategic focus areas. "
+        "identify the focus areas by finding the connections between the differnet sources/ signals like github, job boards, blog, social media. try to find connections to establish a reasoning behind the output, don't repeat the same thing again and again"
+        "Focus areas should be concrete investment themes (e.g. 'AI/ML infrastructure', "
+        "'Mobile SDK expansion', 'Developer tooling'), not vague categories. "
+        "Return ONLY valid JSON in this exact shape, no extra text:\n"
+        '{"focus_areas": ["...", "..."], "rationale": "one concise paragraph explaining the reasoning"}'
+    )
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": json.dumps(payload)},
+    ]
+
+    try:
+        response = chat_completion(
+            messages=messages,
+            model=KUNDALI_SYNTHESIS_MODEL,
+            response_format={"type": "json_object"},
+            temperature=0.4,
+            max_tokens=1024,
+            no_fallbacks=True,
+        )
+        result = json.loads(response.content)
+        return result
+    except Exception as e:
+        print(f"[_synthesize_focus_areas] LLM call failed, continuing with focus_areas=None: {e}")
+        return None
 
 
 def build_kundali(target_id: int, github_url: str | None = None, ats_url: str | None = None, web_social_url: str | None = None, blog_url: str | None = None) -> Kundali:
@@ -92,7 +139,17 @@ def build_kundali(target_id: int, github_url: str | None = None, ats_url: str | 
     blog = get_blog_posts(blog_url) if blog_url else None
 
 
-    
+
+    # LLM synthesis pass — derives focus_areas from the aggregated signals
+    focus_areas = _synthesize_focus_areas(
+        tech_stack=tech_stack,
+        cadence_baseline=cadence_baseline,
+        recent_shifts=recent_shifts,
+        ats_postings=postings,
+        web_social=web_social,
+        blog=blog,
+    )
+
 
     # write to db
     db_gen = get_db()
@@ -106,6 +163,7 @@ def build_kundali(target_id: int, github_url: str | None = None, ats_url: str | 
             existing.ats_postings = postings
             existing.web_social_status = web_social
             existing.blog_status = blog
+            existing.focus_areas = focus_areas
             target_kundali = existing
         else:
             target_kundali = Kundali(
@@ -116,7 +174,7 @@ def build_kundali(target_id: int, github_url: str | None = None, ats_url: str | 
                 ats_postings=postings,
                 web_social_status=web_social,
                 blog_status=blog,
-                focus_areas=None,
+                focus_areas=focus_areas,
             )
             db.add(target_kundali)
 
