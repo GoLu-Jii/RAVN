@@ -1,6 +1,6 @@
 # RAVN — Build Progress Tracker
 
-Last updated: 2026-10-19
+Last updated: 2026-10-26
 
 Lists only what has been written and tested so far. No plans, no roadmap.
 
@@ -217,45 +217,40 @@ Lists only what has been written and tested so far. No plans, no roadmap.
   so autogenerate detects it. Confirmed: `kundali` table exists in `ravn.db`, schema matches
   the model 1:1, `alembic current` matches the latest migration file on disk (no drift).
 
+## app/llm/clients.py
+- Multi-provider LLM client with automatic smart provider detection and cascading fallbacks:
+  - Default Groq model: `openai/gpt-oss-120b` (fast inference, < 2s).
+  - Default Gemini model: `gemini-3.8-flash` (updated for current Google AI Studio API availability).
+  - Provider auto-routing: routes `openai/gpt-oss-120b` directly to Groq, `gemini*` models to Gemini, and all other models to OpenRouter.
+  - Cascading failover: if primary provider encounters rate limits (HTTP 429), timeouts, or server errors, it seamlessly cascades through Groq &rarr; Gemini &rarr; OpenRouter.
+  - Kwarg sanitization: strips internal helper flags before forwarding calls to official provider SDKs.
+
 ## app/kundali/synthesis.py
 - `_synthesize_focus_areas(tech_stack, cadence_baseline, recent_shifts, ats_postings, web_social, blog)` —
-  LLM synthesis pass that derives `focus_areas` from the aggregated raw signals:
-  - Trims payload to signal-bearing data only: top 8 langs by byte-count, repos sorted by
-    recent commit volume, up to 30 ATS job titles, 15 blog titles, 400-char social snippet.
-  - Calls `chat_completion()` with `model="openai/gpt-oss-120b"` and smart provider
-    fallback across Groq, Gemini (`gemini-3.8-flash`), and OpenRouter, with
-    `response_format={"type": "json_object"}`, `temperature=0.4`, `max_tokens=1024`.
-  - System prompt instructs the LLM to identify connections between signals (GitHub repos/commits,
-    job board postings, blog, social) to identify 3 to 5 concrete strategic investment themes
-    with reasoning: `{"focus_areas": [...], "rationale": "..."}`.
-  - Graceful degradation: any LLM failure is caught and logged; returns `None` so the
-    DB write proceeds without crashing the whole build.
+  LLM synthesis pass that derives a comprehensive competitive intelligence dossier from aggregated raw signals:
+  - Trims payload to signal-bearing data only: top 8 languages by byte-count, repos sorted by recent commit volume, active ATS job titles, 15 blog titles with excerpts, and web/social snippets.
+  - Calls `chat_completion()` with `model="openai/gpt-oss-120b"`, multi-provider fallback, `response_format={"type": "json_object"}`, `temperature=0.4`, and `max_tokens=1800` (to avoid JSON truncation).
+  - Structured Intelligence Dossier prompt produces:
+    - `executive_summary`: 2–3 sentence high-level overview of target trajectory.
+    - `strategic_focus_areas`: Array of themes with `theme`, `confidence` (`high`/`medium`/`low`), `signal_evidence` (linking code, hiring, blog, and social signals), and `strategic_implication` (commercial intent).
+    - `cross_signal_correlations`: Concrete hypotheses connecting at least two distinct channels (e.g. repos + job reqs).
+    - `predictive_outlook`: 3–6 month product or business moves with concrete indicators to monitor.
+    - Retains backward-compatible root fields `focus_areas` and `rationale`.
+  - Graceful degradation: any LLM failure is caught and logged; returns `None` so the DB write proceeds without crashing the whole build.
 - `build_kundali(target_id, github_url, ats_url=None, web_social_url=None, blog_url=None)` —
   orchestrates the Day-0 profile build:
   1. `list_repos(github_url, limit=10)` for the target's repo subset.
   2. Per repo: `get_languages`, `get_commit_activity`, `get_recent_commits`.
-  3. Aggregates `tech_stack` by summing byte-counts per language across all repos in the
-     subset.
-  4. Aggregates `cadence_baseline` by summing each week's commit total across all repos into
-     a single 52-slot dict keyed by week index.
-  5. Builds `recent_shifts` as a list of `{"repo": ..., "recent_commits": count}` entries for
-     repos with any commits in the last 45 days.
-  6. Fetches ATS postings via `get_ats_postings(ats_url)`: supports Greenhouse/Lever/Ashby/Workable APIs
-     and automatically falls back to scraping job listing cards directly from company-hosted careers pages.
+  3. Aggregates `tech_stack` by summing byte-counts per language across all repos in the subset.
+  4. Aggregates `cadence_baseline` by summing each week's commit total across all repos into a single 52-slot dict keyed by week index.
+  5. Builds `recent_shifts` as a list of `{"repo": ..., "recent_commits": count}` entries for repos with any commits in the last 45 days.
+  6. Fetches ATS postings via `get_ats_postings(ats_url)`: supports Greenhouse/Lever/Ashby/Workable APIs and automatically falls back to scraping job listing cards directly from company-hosted careers pages.
   7. Fetches web/social updates via `get_web_social_content(web_social_url)` if social URL present.
-  8. Fetches recent blog posts via `get_blog_posts(blog_url)`: auto-discovers RSS/Atom feeds
-     and falls back to extracting article cards and full text via `trafilatura` when no RSS feed exists.
-   9. **LLM synthesis** — calls `_synthesize_focus_areas()` with the aggregated data to derive
-      `focus_areas`. Uses `openai/gpt-oss-120b` with automated cross-provider fallback. Failure is
-      gracefully degraded (writes `None` to `focus_areas` rather than crashing the whole build).
-  10. Idempotent DB write: checks for existing `Kundali` row for `target_id`; updates all
-      fields including `focus_areas` on existing records, or inserts a new record.
-  11. Status management: flips `Target.status` from `"building"` &rarr; `"ready"` upon completion,
-      or `"failed"` with rollback if an unhandled error occurs.
-- Tested live on Target 4 (`stripe`): successfully generated full Kundali across all 4 channels:
-  `tech_stack` (14 langs), `cadence_baseline` (52 weeks), `recent_commits` (10 repos), `ats_postings`
-  (active roles), `blog_status` (recent articles), `web_social_status`, and multi-source
-  synthesized `focus_areas`.
+  8. Fetches recent blog posts via `get_blog_posts(blog_url)`: auto-discovers RSS/Atom feeds and falls back to extracting article cards and full text via `trafilatura` when no RSS feed exists.
+  9. **LLM synthesis** — calls `_synthesize_focus_areas()` with the aggregated multi-channel data to derive the structured intelligence dossier.
+  10. Idempotent DB upsert: checks for existing `Kundali` row for `target_id`; updates all fields in-place on existing records, or inserts a new record.
+  11. Status management: flips `Target.status` from `"building"` &rarr; `"ready"` upon completion, or `"failed"` with rollback if an unhandled error occurs.
+- Tested and verified live on Target 5 (`stripe`): successfully generated full Kundali across all channels: `tech_stack` (14 langs), `cadence_baseline` (52 weeks), `recent_commits` (10 repos), `ats_postings` (5 active jobs), `blog_status` (15 cached articles), `web_social_status`, and multi-source synthesized `focus_areas` dossier.
 
 ---
 
@@ -293,9 +288,7 @@ Lists only what has been written and tested so far. No plans, no roadmap.
 - `tests/test.py` — GitHub parsing layer runner covering `extract_account_name`,
   `get_account_type`, `list_repos`, `get_commit_activity`, `get_recent_commits`, `get_languages`.
   Run via `python -m tests.test`.
-- `tests/retest.py` — End-to-end database verification script: queries the database for target
-  profiles and prints all six Kundali fields (`tech_stack`, `cadence_baseline`, `recent_commits`,
-  `ats_postings`, `web_social_status`, `blog_status`). Run via `python -m tests.retest`.
+- `tests/retest.py` — End-to-end database verification script: queries the database for the latest target Kundali profile and prints all empirical signals (`tech_stack`, `cadence_baseline`, `recent_commits`, `ats_postings`, `web_social_status`, `blog_status`) along with the synthesized strategic intelligence themes. Run via `python -m tests.retest`.
 
 ---
 

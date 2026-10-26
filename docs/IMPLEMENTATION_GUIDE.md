@@ -17,17 +17,17 @@ ravn/
 │   │   └── onboarding.py       # source discovery logic (scrape + LLM classify)
 │   │
 │   ├── kundali/
-│   │   ├── models.py           # KundaliProfile model
-│   │   ├── builder.py          # GitHub-only fetchers (list_repos, get_languages, get_commit_activity, get_recent_commits)
-│   │   └── synthesis.py        # orchestrates all 4 data tracks, aggregates, DB write; LLM synthesis pass (focus_areas) not yet implemented
+│   │   ├── models.py           # Kundali model (table: kundali)
+│   │   ├── builder.py          # GitHub fetchers (list_repos, get_languages, get_commit_activity, get_recent_commits)
+│   │   └── synthesis.py        # orchestrates 4 data tracks, aggregates signals, DB upsert, LLM strategic intelligence dossier
 │   │
 │   ├── daily/
 │   │   ├── collectors.py       # scheduled daily job, per-source fetchers
 │   │   └── fetchers/
-│   │       ├── github.py
-│   │       ├── ats.py
-│   │       ├── blogs.py
-│   │       └── socials.py
+│   │       ├── github.py       # daily GitHub commit/PR fetcher
+│   │       ├── ats.py          # ATS API fetcher (Greenhouse/Lever/Ashby/Workable) + HTML career portal fallback
+│   │       ├── blogs.py        # RSS/Atom feed parser + trafilatura HTML article fallback
+│   │       └── socials.py      # web landing page & social updates
 │   │
 │   ├── events/
 │   │   ├── models.py           # Event model (unified table)
@@ -49,7 +49,7 @@ ravn/
 │   │   └── jobs.py             # APScheduler setup, registers daily/weekly jobs
 │   │
 │   ├── llm/
-│   │   └── clients.py          # multi-provider LLM client: OpenRouter (primary) → Gemini (fallback 1) → Groq (fallback 2)
+│   │   └── clients.py          # multi-provider LLM router: Groq (openai/gpt-oss-120b) → Gemini (gemini-3.8-flash) → OpenRouter
 │   │
 │   └── db/
 │       ├── database.py         # SQLAlchemy engine/session setup
@@ -86,11 +86,11 @@ Automated competitive intelligence for tech & AI companies. RAVN watches a targe
 |---|---|
 | Language | Python |
 | Web framework | FastAPI |
-| Database | PostgreSQL |
+| Database | SQLite (`ravn.db` for local MVP) / PostgreSQL (production target) |
 | ORM / migrations | SQLAlchemy + Alembic |
 | Scheduler | APScheduler |
-| LLM | OpenRouter (primary, free tier) → Gemini → Groq (fallbacks) |
-| Auth | passlib (bcrypt) + python-jose / pyjwt + FastAPI `OAuth2PasswordBearer` |
+| LLM | Groq (`openai/gpt-oss-120b`) → Gemini (`gemini-3.8-flash`) → OpenRouter (fallbacks) |
+| Auth | passlib (bcrypt) + python-jose / pyjwt + FastAPI `HTTPBearer` |
 | Scraping / fetching | httpx, BeautifulSoup4, feedparser, trafilatura |
 | PDF export | WeasyPrint |
 | Config | python-dotenv |
@@ -99,15 +99,15 @@ Automated competitive intelligence for tech & AI companies. RAVN watches a targe
 
 ### Notes per component
 
-**Auth** — `passlib`/`bcrypt` for password hashing, `python-jose`/`pyjwt` for JWT issuance and validation, built on FastAPI's built-in `OAuth2PasswordBearer` flow. No separate auth framework needed at this scale.
+**Auth** — `passlib`/`bcrypt` for password hashing, `python-jose`/`pyjwt` for JWT issuance and validation, with FastAPI's `HTTPBearer` dependency for seamless token authorization in Swagger UI. All auth endpoints accept JSON payloads.
 
-**Onboarding (source discovery)** — `httpx` for async page fetching, `BeautifulSoup4` for parsing homepage links, with a Groq LLM call classifying candidate links into GitHub / ATS / blog / web-social source categories.
+**Onboarding (source discovery)** — `httpx` for page fetching, `BeautifulSoup4` for parsing homepage links, with dynamic URL normalization and LLM classification into GitHub / ATS / blog / web-social source categories.
 
-**Kundali Builder** — `httpx` for GitHub REST API calls (or `PyGithub` as an alternative wrapper), `feedparser` for RSS/Atom feeds, `trafilatura` for clean main-text extraction from blog posts, and plain `httpx` calls to the Wayback Machine CDX API for historical backfill.
+**Kundali Builder** — `httpx` for GitHub REST API calls (languages, commit cadence, active repos), `feedparser` for RSS/Atom feeds with `trafilatura` HTML article scraping fallback for non-RSS blogs, and ATS API probing with HTML career portal fallback for company-hosted job sites. Derives a multi-track strategic intelligence dossier via LLM synthesis.
 
 **Daily Collector** — reuses the same fetching tools as the Kundali Builder, run incrementally per source.
 
-**Event Store** — PostgreSQL + SQLAlchemy, using `JSON`/`JSONB` columns for flexible fields (tags, tech stack, signals).
+**Event Store** — SQLite (`ravn.db` in local dev) / PostgreSQL + SQLAlchemy, using `JSON` columns for flexible multi-channel signals (tags, tech stack, dossiers).
 
 **Weekly Signal Detector** (`weekly/detector.py`) — pure Python logic; no additional library needed, since it's querying stored data and running comparison rules (both single-week spike checks and multi-week trend checks).
 
@@ -125,8 +125,8 @@ Conceptual schema — fields and relationships, not raw SQL.
 | Field | Notes |
 |---|---|
 | `id` | PK |
-| `email` | |
-| `password_hash` | |
+| `email` | Unique |
+| `password_hash` | bcrypt hashed |
 | `created_at` | |
 
 ### `targets`
@@ -134,21 +134,24 @@ Conceptual schema — fields and relationships, not raw SQL.
 |---|---|
 | `id` | PK |
 | `user_id` | FK → `users` |
-| `name` | |
+| `name` | Target name |
 | `website_url` | |
 | `github_url`, `ats_url`, `blog_url`, `web_social_url` | nullable — any source may be missing |
-| `status` | `building` / `ready` / `degraded` |
+| `status` | `building` / `ready` / `failed` |
 | `created_at` | |
 
-### `kundali_profiles`
+### `kundali`
 | Field | Notes |
 |---|---|
 | `id` | PK |
-| `target_id` | FK → `targets`, one-to-one |
-| `tech_stack` | JSON |
-| `focus_areas` | JSON |
-| `cadence_baseline` | JSON — e.g. weekly commit counts array |
-| `recent_shifts` | JSON |
+| `target_id` | FK → `targets.id`, unique, one-to-one |
+| `tech_stack` | JSON — languages detected and byte counts |
+| `focus_areas` | JSON — LLM strategic intelligence dossier (executive summary, themes, correlations, forecasts) |
+| `cadence_baseline` | JSON — 52-week commit activity distribution |
+| `recent_commits` | JSON — repos with recent commits in 45-day window |
+| `ats_postings` | JSON — active job requisitions from ATS/careers |
+| `web_social_status` | JSON — landing page / social content snapshot |
+| `blog_status` | JSON — cached blog articles / RSS feed entries |
 | `created_at` | |
 
 ### `events` (unified table for all source types)

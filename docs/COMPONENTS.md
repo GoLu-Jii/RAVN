@@ -22,10 +22,13 @@
 
 ## 3. Kundali Builder
 
-- **Trigger:** Immediately after onboarding confirmation; runs async, target shows "building..." in dashboard meanwhile
-- **Input:** Confirmed source URLs for that target
-- **Output:** The Day 0 profile — max available historical context, tech stack, cadence baseline, recent shifts → stored, and used as reference context for later stages
-- **Feeds:** Finished Kundali profile → Event Store; flips target status to "ready"
+- **Trigger:** Immediately after onboarding confirmation (runs in background or synchronously via `?sync=true`); target shows "building" in dashboard meanwhile.
+- **Input:** Confirmed source URLs for that target (GitHub, ATS/careers, blog, web/social).
+- **Process:**
+  - Multi-track ingestion across GitHub (repos, commit activity, language byte-counts), ATS APIs / career pages (active job requisitions), technical blogs (RSS/Atom with `trafilatura` HTML article fallback), and web/social snapshots.
+  - Multi-provider LLM synthesis pass (Groq `openai/gpt-oss-120b` &rarr; Gemini `gemini-3.8-flash` &rarr; OpenRouter) producing a structured competitive intelligence dossier (`executive_summary`, `strategic_focus_areas`, `cross_signal_correlations`, `predictive_outlook`).
+- **Output:** The Day 0 profile — empirical signals (`tech_stack`, 52-week `cadence_baseline`, `recent_commits`, `ats_postings`, `blog_status`, `web_social_status`) and strategic intelligence dossier (`focus_areas`) persisted via idempotent DB upsert.
+- **Feeds:** Finished Kundali profile &rarr; DB / Event Store; flips target status to "ready". Accessible via dedicated endpoints: `/targets/{id}/kundali/raw`, `/targets/{id}/kundali/synthesis`, and `/targets/{id}/kundali`.
 
 ---
 
