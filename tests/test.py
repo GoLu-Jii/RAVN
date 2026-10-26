@@ -4,6 +4,9 @@ Run from project root: python -m tests.test_kundali_github
 (or however you're invoking your test scripts, per your existing pattern)
 """
 
+import sys
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 from datetime import datetime, timedelta, timezone
 
 from app.kundali.builder import (

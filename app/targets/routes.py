@@ -58,6 +58,7 @@ def _serialize_kundali(kundali: Kundali, target: Target | None = None) -> dict:
         "web_social_status": kundali.web_social_status,
         "blog_status": kundali.blog_status,
         "focus_areas": kundali.focus_areas,
+        "intelligence": kundali.focus_areas,
         "created_at": kundali.created_at,
     }
 
@@ -165,10 +166,73 @@ def get_target(target_id: int, current_user: User = Depends(get_current_user), d
     return target
 
 
+def _serialize_raw_signals(kundali: Kundali, target: Target | None = None) -> dict:
+    return {
+        "target_id": kundali.target_id,
+        "target_name": target.name if target else None,
+        "status": target.status if target else None,
+        "created_at": kundali.created_at,
+        "tech_stack": kundali.tech_stack,
+        "cadence_baseline": kundali.cadence_baseline,
+        "recent_commits": kundali.recent_commits,
+        "ats_postings": kundali.ats_postings,
+        "blog_status": kundali.blog_status,
+        "web_social_status": kundali.web_social_status,
+    }
+
+
+def _serialize_synthesis(kundali: Kundali, target: Target | None = None) -> dict:
+    return {
+        "target_id": kundali.target_id,
+        "target_name": target.name if target else None,
+        "status": target.status if target else None,
+        "created_at": kundali.created_at,
+        "intelligence": kundali.focus_areas,
+    }
+
+
+@router.get(
+    "/{target_id}/kundali/raw",
+    summary="View raw signals (GitHub, ATS, Blog, Social)",
+    description="Returns purely uninterpreted empirical signals: language byte counts, 52-week commit cadence, recent commits, open jobs, blog posts, and social updates.",
+)
+def get_target_kundali_raw(target_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    target = db.query(Target).filter(Target.id == target_id, Target.user_id == current_user.id).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="Target not found")
+
+    kundali = db.query(Kundali).filter(Kundali.target_id == target_id).first()
+    if not kundali:
+        if target.status == "building":
+            return {"status": "building", "message": "Kundali profile is still building in background"}
+        raise HTTPException(status_code=404, detail="Kundali profile not found")
+
+    return _serialize_raw_signals(kundali, target)
+
+
+@router.get(
+    "/{target_id}/kundali/synthesis",
+    summary="View LLM competitive intelligence dossier",
+    description="Returns in-depth strategic analysis: executive summary, strategic focus areas with cross-channel evidence, intelligence correlations, and predictive outlook.",
+)
+def get_target_kundali_synthesis(target_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    target = db.query(Target).filter(Target.id == target_id, Target.user_id == current_user.id).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="Target not found")
+
+    kundali = db.query(Kundali).filter(Kundali.target_id == target_id).first()
+    if not kundali:
+        if target.status == "building":
+            return {"status": "building", "message": "Kundali profile is still building in background"}
+        raise HTTPException(status_code=404, detail="Kundali profile not found")
+
+    return _serialize_synthesis(kundali, target)
+
+
 @router.get(
     "/{target_id}/kundali",
-    summary="Step 5: View target's Kundali profile",
-    description="Returns tech stack, commit cadence, recent commits, ATS postings, and synthesized focus areas.",
+    summary="View complete unified Kundali",
+    description="Returns the full profile combining raw empirical signals with the synthesized intelligence dossier.",
 )
 def get_target_kundali(target_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     target = db.query(Target).filter(Target.id == target_id, Target.user_id == current_user.id).first()

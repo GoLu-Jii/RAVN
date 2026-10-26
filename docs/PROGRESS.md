@@ -273,9 +273,16 @@ Lists only what has been written and tested so far. No plans, no roadmap.
   `Depends(get_current_user)`.
 - `GET /targets/{target_id}` — returns target details and current build status (`building`,
   `ready`, `failed`). Protected via `Depends(get_current_user)`.
-- `GET /targets/{target_id}/kundali` — returns the generated Kundali profile, or
-  `{"status": "building", "message": "Kundali profile is still building in background"}` if
-  in-progress, or 404 if not found. Protected via `Depends(get_current_user)`.
+- `GET /targets/{target_id}/kundali/raw` — returns purely the uninterpreted empirical signals:
+  `tech_stack` language byte counts, 52-week `cadence_baseline`, `recent_commits` activity,
+  `ats_postings` job requisitions, `blog_status` articles, and `web_social_status`. Protected via
+  `Depends(get_current_user)`.
+- `GET /targets/{target_id}/kundali/synthesis` — returns the deep LLM competitive intelligence dossier:
+  `executive_summary`, structured `strategic_focus_areas` with cross-signal evidence (code, hiring,
+  blog, social) and commercial intent, `cross_signal_correlations` (hypotheses linking channels), and
+  `predictive_outlook` (forecasted 3–6 month product moves). Protected via `Depends(get_current_user)`.
+- `GET /targets/{target_id}/kundali` — returns the complete unified profile combining raw signals
+  with the synthesized intelligence dossier. Protected via `Depends(get_current_user)`.
 - `POST /targets/{target_id}/kundali/build` — synchronously builds or refreshes the Kundali
   profile for `target_id` using its saved URLs directly from the database. **Requires zero request body.**
   Protected via `Depends(get_current_user)`.

@@ -61,14 +61,38 @@ def _synthesize_focus_areas(
     }
 
     system_prompt = (
-        "You are a competitive intelligence analyst. "
-        "Given raw public signals from a tech company's GitHub, job board, blog, and social media, "
-        "identify their top 3 to 5 current strategic focus areas. "
-        "identify the focus areas by finding the connections between the differnet sources/ signals like github, job boards, blog, social media. try to find connections to establish a reasoning behind the output, don't repeat the same thing again and again"
-        "Focus areas should be concrete investment themes (e.g. 'AI/ML infrastructure', "
-        "'Mobile SDK expansion', 'Developer tooling'), not vague categories. "
-        "Return ONLY valid JSON in this exact shape, no extra text:\n"
-        '{"focus_areas": ["...", "..."], "rationale": "one concise paragraph explaining the reasoning"}'
+        "You are a Principal Competitive Intelligence Analyst. "
+        "Analyze the provided multi-channel public footprint of a tech company (GitHub code activity, job openings, blog posts, and social media announcements). "
+        "Identify what the competitor is actively building, hiring for, and positioning to launch. "
+        "Return ONLY valid JSON matching this exact structure, with no extra text or markdown fences:\n"
+        "{\n"
+        '  "executive_summary": "2-3 sentences synthesizing their macro trajectory, strategic posture, and momentum across signals.",\n'
+        '  "strategic_focus_areas": [\n'
+        "    {\n"
+        '      "theme": "Concrete investment theme (e.g. \'Agentic AI & Automated Financial Workflows\')",\n'
+        '      "confidence": "high",\n'
+        '      "summary": "2-3 sentences explaining what they are developing and their commercial intent",\n'
+        '      "signal_evidence": {\n'
+        '        "code": "Specific GitHub repos, commit frequency, or language shifts",\n'
+        '        "hiring": "Specific open role titles or team expansion clues",\n'
+        '        "marketing_or_blog": "Specific published articles or announcements",\n'
+        '        "social": "Specific product updates or public partnership mentions"\n'
+        "      },\n"
+        '      "strategic_implication": "What this means for competitors and what capabilities they plan to dominate"\n'
+        "    }\n"
+        "  ],\n"
+        '  "cross_signal_correlations": [\n'
+        "    {\n"
+        '      "hypothesis": "Concrete deduction linking at least two distinct channels (e.g. code + hiring or marketing + code)",\n'
+        '      "evidence": "Facts connecting the signals",\n'
+        '      "projected_moves": "What move or product launch they are likely preparing for the next 3-6 months"\n'
+        "    }\n"
+        "  ],\n"
+        '  "predictive_outlook": [\n'
+        '    "Predicted upcoming announcement or capability 1",\n'
+        '    "Predicted upcoming announcement or capability 2"\n'
+        "  ]\n"
+        "}"
     )
 
     messages = [
@@ -81,11 +105,18 @@ def _synthesize_focus_areas(
             messages=messages,
             model=KUNDALI_SYNTHESIS_MODEL,
             response_format={"type": "json_object"},
-            temperature=0.4,
-            max_tokens=1024,
+            temperature=0.3,
+            max_tokens=1800,
             no_fallbacks=True,
         )
         result = json.loads(response.content)
+
+        # Backwards compatibility helpers
+        if "strategic_focus_areas" in result and "focus_areas" not in result:
+            result["focus_areas"] = [f.get("theme") for f in result["strategic_focus_areas"] if f.get("theme")]
+        if "executive_summary" in result and "rationale" not in result:
+            result["rationale"] = result["executive_summary"]
+
         return result
     except Exception as e:
         print(f"[_synthesize_focus_areas] LLM call failed, continuing with focus_areas=None: {e}")
