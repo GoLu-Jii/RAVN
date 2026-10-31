@@ -1,6 +1,8 @@
 # RAVN — watch-it
 
-Automated competitive intelligence for tech & AI companies. RAVN watches a target company's public footprint continuously, builds deep historical context, and correlates signals across public channels (GitHub, ATS/careers, engineering blogs, web & social) to surface what a competitor is likely building — before they announce it.
+Competitors rarely announce their next move first. Their clues are already public—in code, hiring, engineering posts, and product updates. RAVN connects those signals to reveal where they’re headed.
+
+UNDER CONSTRUCTION
 
 ---
 
