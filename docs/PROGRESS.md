@@ -1,6 +1,6 @@
 # RAVN — Build Progress Tracker
 
-Last updated: 2026-10-26
+Last updated: 2026-10-31
 
 Lists only what has been written and tested so far. No plans, no roadmap.
 
@@ -26,7 +26,7 @@ Lists only what has been written and tested so far. No plans, no roadmap.
 - `verify_password(password: str, hashed_password: str) -> bool` — tested against
   correct and incorrect passwords.
 - `create_access_token(user_id: str) -> str` — builds JWT with `sub` + `exp` claims,
-  signed with HS256, secret key loaded from `.env` via `os.getenv`.
+  signed with HS256, secret key loaded from `JWT_SECRET_KEY` in `.env` via `os.getenv`.
 - `verify_access_token(token: str) -> dict` — decodes JWT, does not catch exceptions
   internally (raises `ExpiredSignatureError` / `InvalidTokenError` to caller).
   Tested: valid token decodes successfully, expired token raises `ExpiredSignatureError`.
@@ -137,30 +137,18 @@ Lists only what has been written and tested so far. No plans, no roadmap.
 
 ## app/llm/clients.py & app/llm/__init__.py
 - Single shared multi-provider LLM client (`LLMClient`, `get_llm_client()`, `chat_completion`):
-  - **Primary Provider — OpenRouter**:
-    - Connects to OpenRouter's OpenAI-compatible completions API using `OPENROUTER_API_KEY`.
-    - Primary model: `liquid/lfm-2.5-2.6b:free` (0 cost on OpenRouter free tier).
-    - Multi-model fallback array: passes up to 3 candidate models in OpenRouter's native `models`
-      parameter (`["liquid/lfm-2.5-2.6b:free", "google/gemma-4-26b-a4b-it:free", "openrouter/free"]`).
-      OpenRouter automatically handles provider-side 429s or downtime by routing to the next model
-      in the list.
-    - Legacy model mapping: if a model without `/` is passed (e.g. `llama-3.3-70b-versatile`), it
-      safely maps to `DEFAULT_OPENROUTER_MODEL`.
-  - **Fallback 1 — Google Gemini**:
-    - Invoked automatically if OpenRouter fails (e.g. daily 50-request limit reached or network error).
-    - Uses Gemini REST API (`gemini-3.8-flash`) via `x-goog-api-key` header with `GEMINI_API_KEY`.
-    - Automatically sets `thinkingConfig: {"thinkingBudget": 0}` by default to prevent internal
-      reasoning tokens from exhausting max output token budgets on structured JSON extraction tasks.
-  - **Fallback 2 — Groq**:
-    - Secondary backup calling Groq API via `GROQ_API_KEY` (`qwen/qwen3.8-27b` / `llama-3.3-70b-versatile`).
-  - **Compatibility**:
-    - Exposes `client.chat.completions.create(...)` matching Groq/OpenAI signatures.
-    - Returns unified `LLMResponse` supporting `.choices[0].message.content`, `.content`, `.text`,
-      `.provider`, and `.model`.
-- Tested and verified:
-  - OpenRouter primary: returns classified links in ~2 seconds with HTTP 200 at 0 cost.
-  - Fallback failover: tested simulated failure of OpenRouter &rarr; successfully caught and fulfilled
-    via Gemini fallback.
+  - Provider routing depends on the requested model. Kundali synthesis requests
+    `openai/gpt-oss-120b`, which routes to Groq first, then Gemini, then OpenRouter.
+  - Gemini uses the configured `GEMINI_MODEL` (default `gemini-3.8-flash`); Groq uses
+    `GROQ_MODEL` (default `openai/gpt-oss-120b`). OpenRouter uses `OPENROUTER_MODEL`
+    (default `liquid/lfm-2.5-2.6b:free`) and a fallback model list.
+  - Requests for Gemini models route to Gemini first; other requests default to OpenRouter
+    first, then Gemini and Groq.
+  - Gemini uses the REST API and defaults `thinkingConfig` to `{"thinkingBudget": 0}`.
+  - Exposes `client.chat.completions.create(...)` and returns unified `LLMResponse` objects
+    supporting `.choices[0].message.content`, `.content`, `.text`, `.provider`, and `.model`.
+- The documented onboarding verification used OpenRouter successfully. The documented
+  fallback verification simulated an OpenRouter failure and succeeded via Gemini.
 
 ---
 
@@ -179,7 +167,7 @@ Lists only what has been written and tested so far. No plans, no roadmap.
   - `app/daily/fetchers/blogs.py`:
     - `discover_feed_url(blog_url)` — tests common feed paths (`/feed`, `/rss`, `/rss.xml`,
       `/atom.xml`, `/feed.xml`), verifying HTTP 200 and XML Content-Type.
-    - `get_blog_posts(blog_url, max_posts=20)` — parses RSS/Atom entries via `feedparser`, fetches
+    - `get_blog_posts(blog_url, max_posts=15)` — parses RSS/Atom entries via `feedparser`, fetches
       each post URL with `httpx`, extracts body content via `trafilatura`, returns normalized
       `[{title, link, published, content}]`.
 
@@ -201,8 +189,9 @@ Lists only what has been written and tested so far. No plans, no roadmap.
 - `get_recent_commits(owner, repo)` — last 45 days of commits via the `since` query param.
 - `get_languages(owner, repo)` — byte-count-per-language dict from the repo's `languages`
   endpoint.
-- All five functions unit-tested in `tests/test.py` (run via `python -m tests.test`),
-  confirmed working against real GitHub orgs/users.
+- Exercised by the live-endpoint verification script in `tests/test.py` (run via
+  `python -m tests.test`); it prints results for inspection and is not an assertion-based
+  unit test.
 
 ## app/kundali/models.py
 - `Kundali` model — `id` (PK), `target_id` (FK → `targets.id`, unique, one-to-one), `tech_stack`
@@ -217,19 +206,18 @@ Lists only what has been written and tested so far. No plans, no roadmap.
   so autogenerate detects it. Confirmed: `kundali` table exists in `ravn.db`, schema matches
   the model 1:1, `alembic current` matches the latest migration file on disk (no drift).
 
-## app/llm/clients.py
-- Multi-provider LLM client with automatic smart provider detection and cascading fallbacks:
-  - Default Groq model: `openai/gpt-oss-120b` (fast inference, < 2s).
-  - Default Gemini model: `gemini-3.8-flash` (updated for current Google AI Studio API availability).
-  - Provider auto-routing: routes `openai/gpt-oss-120b` directly to Groq, `gemini*` models to Gemini, and all other models to OpenRouter.
-  - Cascading failover: if primary provider encounters rate limits (HTTP 429), timeouts, or server errors, it seamlessly cascades through Groq &rarr; Gemini &rarr; OpenRouter.
-  - Kwarg sanitization: strips internal helper flags before forwarding calls to official provider SDKs.
+## app/llm/clients.py (routing details)
+- Provider auto-routing sends `openai/gpt-oss-120b` to Groq, `gemini*` models to Gemini,
+  and other models to OpenRouter.
+- Fallback order follows the selected provider: Groq → Gemini → OpenRouter, Gemini → Groq →
+  OpenRouter, or OpenRouter → Gemini → Groq.
+- Internal helper flags are stripped before forwarding calls to provider SDKs.
 
 ## app/kundali/synthesis.py
 - `_synthesize_focus_areas(tech_stack, cadence_baseline, recent_shifts, ats_postings, web_social, blog)` —
   LLM synthesis pass that derives a comprehensive competitive intelligence dossier from aggregated raw signals:
-  - Trims payload to signal-bearing data only: top 8 languages by byte-count, repos sorted by recent commit volume, active ATS job titles, 15 blog titles with excerpts, and web/social snippets.
-  - Calls `chat_completion()` with `model="openai/gpt-oss-120b"`, multi-provider fallback, `response_format={"type": "json_object"}`, `temperature=0.4`, and `max_tokens=1800` (to avoid JSON truncation).
+  - Trims payload to signal-bearing data only: top 8 languages by byte-count, repos sorted by recent commit volume, active ATS job titles, up to 15 blog titles, and a web/social snippet. Blog article excerpts and cadence data are not included in the LLM payload.
+  - Calls `chat_completion()` with `model="openai/gpt-oss-120b"`, provider fallback, `response_format={"type": "json_object"}`, `temperature=0.3`, and `max_tokens=1800`.
   - Structured Intelligence Dossier prompt produces:
     - `executive_summary`: 2–3 sentence high-level overview of target trajectory.
     - `strategic_focus_areas`: Array of themes with `theme`, `confidence` (`high`/`medium`/`low`), `signal_evidence` (linking code, hiring, blog, and social signals), and `strategic_implication` (commercial intent).

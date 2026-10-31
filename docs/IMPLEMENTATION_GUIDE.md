@@ -49,7 +49,7 @@ ravn/
 │   │   └── jobs.py             # APScheduler setup, registers daily/weekly jobs
 │   │
 │   ├── llm/
-│   │   └── clients.py          # multi-provider LLM router: Groq (openai/gpt-oss-120b) → Gemini (gemini-3.8-flash) → OpenRouter
+│   │   └── clients.py          # model-aware multi-provider LLM router with provider-specific fallback order
 │   │
 │   └── db/
 │       ├── database.py         # SQLAlchemy engine/session setup
@@ -89,8 +89,8 @@ Automated competitive intelligence for tech & AI companies. RAVN watches a targe
 | Database | SQLite (`ravn.db` for local MVP) / PostgreSQL (production target) |
 | ORM / migrations | SQLAlchemy + Alembic |
 | Scheduler | APScheduler |
-| LLM | Groq (`openai/gpt-oss-120b`) → Gemini (`gemini-3.8-flash`) → OpenRouter (fallbacks) |
-| Auth | passlib (bcrypt) + python-jose / pyjwt + FastAPI `HTTPBearer` |
+| Current Kundali LLM routing | Groq (`openai/gpt-oss-120b`) → Gemini → OpenRouter (fallbacks for that requested model) |
+| Auth | bcrypt + PyJWT + FastAPI `HTTPBearer` |
 | Scraping / fetching | httpx, BeautifulSoup4, feedparser, trafilatura |
 | PDF export | WeasyPrint |
 | Config | python-dotenv |
@@ -99,7 +99,7 @@ Automated competitive intelligence for tech & AI companies. RAVN watches a targe
 
 ### Notes per component
 
-**Auth** — `passlib`/`bcrypt` for password hashing, `python-jose`/`pyjwt` for JWT issuance and validation, with FastAPI's `HTTPBearer` dependency for seamless token authorization in Swagger UI. All auth endpoints accept JSON payloads.
+**Auth** — `bcrypt` for password hashing and `PyJWT` for JWT issuance and validation, with FastAPI's `HTTPBearer` dependency for token authorization in Swagger UI. Auth endpoints accept JSON payloads.
 
 **Onboarding (source discovery)** — `httpx` for page fetching, `BeautifulSoup4` for parsing homepage links, with dynamic URL normalization and LLM classification into GitHub / ATS / blog / web-social source categories.
 

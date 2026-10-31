@@ -11,7 +11,7 @@ Automated competitive intelligence for tech & AI companies. RAVN watches a targe
 | **Authentication** | Completed | Sign-up, login, password hashing via bcrypt, JWT issuance, and protected routes with `HTTPBearer` support. |
 | **Target Onboarding** | Completed | Dynamic URL normalization (accepts `stripe.com` or `https://stripe.com`), automated source link discovery & classification via LLM. |
 | **Kundali Builder (Day-0)** | Completed | Multi-channel ingestion across GitHub (repos, languages, 52-week cadence curve), ATS/careers (API + HTML scrapers), technical blogs (RSS + trafilatura HTML article extractor), and web/social snapshots. |
-| **LLM Strategic Dossier** | Completed | Multi-provider router (Groq `openai/gpt-oss-120b` &rarr; Gemini `gemini-3.8-flash` &rarr; OpenRouter) synthesizing executive summary, strategic themes, cross-signal correlations, and predictive outlook. |
+| **LLM Strategic Dossier** | Completed | Kundali synthesis requests `openai/gpt-oss-120b`, routed to Groq first with Gemini and OpenRouter fallbacks; produces executive summary, strategic themes, cross-signal correlations, and predictive outlook. |
 | **Database Persistence** | Completed | SQLite (`ravn.db` for local dev) via SQLAlchemy 2.0 & Alembic migrations. Idempotent upsert of Kundali profiles with status tracking (`building` &rarr; `ready`). |
 | **REST API** | Completed | Clean FastAPI router split (`/targets/preview`, `/targets?sync=true`, `/targets/{id}/kundali/raw`, `/targets/{id}/kundali/synthesis`, `/targets/{id}/kundali`, `/targets/{id}/kundali/build`). |
 | **Daily Collector & Detector** | Planned | Next phase in the roadmap: scheduled daily ingestion into `events` table and weekly spike + trend signal detection. |
@@ -26,7 +26,7 @@ Create a `.env` file in the project root:
 
 ```env
 DATABASE_URL=sqlite:///./ravn.db
-SECRET_KEY=your-secret-key-here
+JWT_SECRET_KEY=your-secret-key-here
 GITHUB_TOKEN=your-github-token-optional
 GROQ_API_KEY=your-groq-key
 GEMINI_API_KEY=your-gemini-key
@@ -63,11 +63,11 @@ Interactive Swagger API documentation will be available at [http://127.0.0.1:800
 
 RAVN includes automated test and verification runners:
 
-- **GitHub Ingestion Unit Tests**:
+- **GitHub Ingestion Verification Script**:
   ```bash
   python -m tests.test
   ```
-  Validates account name parsing, organization vs user classification, repository listing, commit cadence history, and language byte-count aggregation against real endpoints.
+  Exercises account name parsing, organization vs user classification, repository listing, commit cadence history, and language byte-count retrieval against live GitHub endpoints. It prints results for inspection; it is not an assertion-based unit test.
 
 - **Live Database Kundali Inspector**:
   ```bash
