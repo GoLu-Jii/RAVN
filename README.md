@@ -64,13 +64,13 @@ Interactive Swagger API documentation will be available at [http://127.0.0.1:800
 
 ## Verification & Testing
 
-RAVN includes automated test and verification runners:
+RAVN includes manual test and verification scripts (print-and-inspect; not assertion-based):
 
 - **GitHub Ingestion Verification Script**:
   ```bash
   python -m tests.test
   ```
-  Exercises account name parsing, organization vs user classification, repository listing, commit cadence history, and language byte-count retrieval against live GitHub endpoints. It prints results for inspection; it is not an assertion-based unit test.
+  Exercises account name parsing, organization vs user classification, repository listing, commit cadence history, and language byte-count retrieval against live GitHub endpoints. It prints results for inspection.
 
 - **Live Database Kundali Inspector**:
   ```bash
@@ -82,7 +82,7 @@ RAVN includes automated test and verification runners:
 
 ## Architecture Documentation
 
-- [docs/IMPLEMENTATION_GUIDE.md](file:///d:/Projects/AI/RAVN/RAVN/docs/IMPLEMENTATION_GUIDE.md) — Technical stack, folder layout, data models, and component flow.
-- [docs/PROGRESS.md](file:///d:/Projects/AI/RAVN/RAVN/docs/PROGRESS.md) — Chronological progress tracker of completed and tested modules.
-- [docs/COMPONENTS.md](file:///d:/Projects/AI/RAVN/RAVN/docs/COMPONENTS.md) — Specification and data contracts for all 9 platform components.
-- [docs/RAVN_PROJECT_SCOPE.md](file:///d:/Projects/AI/RAVN/RAVN/docs/RAVN_PROJECT_SCOPE.md) — Product philosophy, boundaries, and three-stage intelligence cadence.
+- [docs/IMPLEMENTATION_GUIDE.md](docs/IMPLEMENTATION_GUIDE.md) — Technical stack, folder layout, data models, and component flow.
+- [docs/PROGRESS.md](docs/PROGRESS.md) — Chronological progress tracker of completed and tested modules.
+- [docs/COMPONENTS.md](docs/COMPONENTS.md) — Specification and data contracts for all 9 platform components.
+- [docs/RAVN_PROJECT_SCOPE.md](docs/RAVN_PROJECT_SCOPE.md) — Product philosophy, boundaries, and three-stage intelligence cadence.

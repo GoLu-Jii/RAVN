@@ -32,7 +32,9 @@
 
 ---
 
-## 4. Daily Collector (Implemented)
+## 4. Daily Collector (Implemented; automated tests missing)
+
+The implementation exists, but date boundaries, duplicate suppression on rerun, and baseline exclusion have not been covered by automated assertions; these are the highest-priority collector cases to test.
 
 - **Trigger:** Scheduled for 11:59 PM Asia/Kolkata once per day for ready targets, or manually via `POST /targets/{id}/daily/collect`; each source is handled independently.
 - **Input:** Target's confirmed source URLs and the current Asia/Kolkata calendar date (12:00 AM through 11:59 PM). Repeated manual runs use the same date and deduplicate stored events.
@@ -40,6 +42,9 @@
 - **Feeds:** Collects only events dated on the current Asia/Kolkata calendar date. Full-detail events and one-liners go to the Event Store; one status, count, and highlight is saved for each of the four source types per target/date. First-run web snapshots are treated as baseline.
 - **Highlights:** Each source/date highlight joins up to the three newest event one-liners and reports any remaining event count. It is formatting, not LLM-generated analysis.
 - **History:** `GET /targets/{id}/daily/summaries` reads the four highlights for a date; `/daily/summaries/dates` lists dates with stored summary records. Historical baseline-only dates have `baseline_only` status; missing historical summaries report `not_recorded` because collection status cannot be inferred.
+- **Current source-date limitation:** ATS/blog listings without a parseable publication date are excluded. The configured ready targets currently resolve to one unique ATS and blog URL (Stripe); a live sample on 2026-11-05 returned 5 undated ATS listings and 15 undated blog entries, so no hiring/blog events reached storage for that target. Until date handling is resolved, weekly cross-source counts and confidence would be biased toward GitHub and web/social. This sample should not be generalized to other companies.
+- **Tagging boundary:** Events currently receive fixed source/type labels only. Semantic product/topic tagging for the planned weekly spike/trend detector is not implemented. Recommended before detector work: add a separate deterministic tagging step at ingestion with a versioned taxonomy; this is a recommendation, not current behavior.
+- **Recovery boundary:** Checkpoints record last success and the latest web/social hash, but do not drive missed-date backfills. A delayed scheduled invocation still collects the date current at invocation time.
 
 ---
 
@@ -57,7 +62,7 @@
 ## 6. Weekly Signal Detector (Planned)
 
 - **Trigger:** Scheduled, once per week per target, always runs regardless of activity level
-- **Input:** That week's tagged events, pulled from the event store, plus the last 4–6 weeks' stored category counts for trend comparison
+- **Input (planned):** That week's events after semantic tagging is defined and implemented, plus the last 4–6 weeks' stored category counts for trend comparison. Current fixed source/type labels do not supply this taxonomy.
 - **Output:** A list of candidate signals handed to the weekly narrator, or a "low activity" flag summarizing the week's minimal events — never a blank output. Also stores this week's category counts for future trend comparisons.
 - **Process:**
   - **Spike check** — scans the current week's tagged events for unusual overlap across multiple sources in the same 7-day window (e.g. commit activity + job postings in the same category).

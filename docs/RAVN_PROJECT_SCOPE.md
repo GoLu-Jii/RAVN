@@ -40,6 +40,8 @@ RAVN watches a standardized set of public sources for every target:
 3. **Engineering blogs** — technical posts and dev announcements
 4. **Social & web** — official product updates and launch pages
 
+**Implementation boundary:** pull requests and dependency/library changes remain intended product scope, but the current daily collector stores GitHub commits only. ATS/blog items must have a parseable publication date to enter daily storage; current-target sampling and its limitations are documented in `IMPLEMENTATION_GUIDE.md`.
+
 ### Guardrails
 - **Public data only.** RAVN never accesses anything beyond what is publicly visible. Platforms with no official public API and restrictive ToS (e.g. LinkedIn, Wellfound) are treated as best-effort web/social sources at most, never as dedicated integrations.
 - **Graceful degradation.** If a source isn't available (e.g. a target's GitHub is private), RAVN doesn't break — it simply relies more heavily on whatever other sources are available.
@@ -99,7 +101,7 @@ Every day, RAVN logs new activity from the target's footprint.
 Once a week, RAVN synthesizes the full week of detailed events (not just the one-liners) into an executive-level briefing.
 
 **How correlation works (hybrid approach):**
-1. **Signal detection (rule-based):** incoming events are tagged with simple categories (e.g. a repo tagged by its topic area, a job post tagged by its key skills). A rule scans the week's tagged data for two kinds of pattern: a **spike** — unusual overlap across multiple sources within the same week — and a **trend** — a category showing consistent or growing presence across the last 4–6 weeks, even if no single week alone looked dramatic. This step is simple, consistent, and fully explainable — it either finds a candidate pattern (of either kind) or it doesn't.
+1. **Signal detection (rule-based, planned):** a tagging step must assign product/topic categories to events (e.g. a repo by its topic area, a job post by its key skills), then rules scan the week's tagged data for a **spike** (unusual overlap across sources in one week) or a **trend** (a category's consistent or growing presence across 4–6 weeks). Current implementation only stores fixed source/type labels; product/topic tagging, its owner, and its taxonomy are not implemented or finalized. A recommended design is a separate deterministic tagging step at ingestion, but that remains a proposal until confirmed.
 2. **Explanation (LLM-based, multi-agent):** only the candidate signals found in step 1 — along with their real underlying data — are handed to a small verification loop: a Signal Analyst selects what's worth reporting, a Verifier independently checks each candidate against the raw data for disconfirming evidence, a Writer drafts the narrative, and a Critic checks the draft for overstatement before it's finalized. The LLM is never asked to invent a correlation from raw data on its own; it only narrates and verifies a correlation that's already been detected by rules.
 
 This hybrid design means RAVN's signals are always traceable back to real matching data (avoiding the risk of the LLM confidently describing a pattern that doesn't actually exist), while still getting a natural-language, executive-readable explanation.

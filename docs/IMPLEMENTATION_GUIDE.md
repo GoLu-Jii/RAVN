@@ -6,7 +6,7 @@ This guide covers the implemented runtime and the planned product architecture. 
 ravn/
 ├── app/
 │   ├── main.py                 # FastAPI app entrypoint
-│   ├── config.py               # planned settings module; currently empty
+│   ├── config.py               # empty placeholder; environment reads are currently module-local
 │   │
 │   ├── auth/
 │   │   ├── routes.py           # signup/login endpoints
@@ -97,7 +97,7 @@ Automated competitive intelligence for tech & AI companies. RAVN watches a targe
 | PDF export | WeasyPrint |
 | Config | python-dotenv |
 | Validation | Pydantic |
-| Hosting | Railway or Render |
+| Hosting | Railway or Render are proposed options; persistence and scheduler deployment are not configured/validated |
 
 ### Notes per component
 
@@ -109,7 +109,19 @@ Automated competitive intelligence for tech & AI companies. RAVN watches a targe
 
 **Daily Collector** — collects events dated on the current Asia/Kolkata calendar date (00:00 through 23:59), then stores full event detail and one source highlight/status for each of GitHub, ATS, blog, and web/social. The scheduled run is at 23:59 Asia/Kolkata; manual runs use the same date window. Event one-liners and per-source highlights use deterministic formatting, not an LLM. Pull request and dependency-change events remain part of the broader project scope but are not collected by this implementation yet.
 
+ATS and blog items without a parseable source date are dropped; the collector does not infer when they were published. A live fetch on 2026-11-05 against the configured ready targets found four target records but only one unique ATS URL and one unique blog URL (all four records point to Stripe): 0/5 ATS listings and 0/15 blog entries had dates. This is a point-in-time sample, not a representative measurement across companies. For this configured target, no hiring or blog events reached the event store; until date handling is resolved, weekly cross-source counts and confidence would be biased toward GitHub and web/social.
+
+The missing Stripe ATS dates are explained by the current fetch path: `https://stripe.com/careers` is not recognized as one of the supported ATS API hosts, so `get_ats_postings()` uses the company-page HTML fallback. That fallback extracts listing links/titles and explicitly sets `posted_at` to `None`; it does not parse the linked job detail page for a publication date. The collector never receives a source date to normalize. For provider-specific adapters, the code currently maps Greenhouse `updated_at`, Lever `createdAt`, Ashby `publishedAt`, and Workable `published_on`/`created_at`. Greenhouse's [Job Board API docs](https://docs.greenhouse.io/job-board) show `updated_at` in list responses and `first_published` on individual job responses. Ashby's [public job posting API docs](https://developers.ashbyhq.com/docs/public-job-posting-api) specify `publishedAt`, and a sample Ashby feed returned that field. Lever's [public Postings API field list](https://github.com/lever/postings-api#api-methods) does not document `createdAt`, so its mapping still needs to be checked against a real raw board response before relying on it. No configured target uses these three ATS board types, and a raw Stripe-page fetch from the local runtime was unavailable during this review because DNS resolution failed. Do not generalize the Stripe fallback result to those ATS APIs.
+
+Whether to use a first-seen date for undated listings remains open. That would mean the event represents “first observed by RAVN,” not the employer's posting date, and requires reliably diffing full listing snapshots over time; the current checkpoint only stores a last-success timestamp and one web/social hash, not an ATS/blog listing snapshot. It should be modeled and labeled as an observation date rather than silently treated as a source publication date.
+
+The collector adds fixed source/type labels (`github`, `commit`; `hiring`, `job_posting`; `engineering`, `blog`; `web_update`). These are not the product/topic taxonomy needed for cross-source spike and trend analysis. The weekly detector and semantic tagging are not implemented. Recommended design to settle before detector work: a separate deterministic tagging step that assigns a versioned taxonomy at ingestion, so detector logic can focus on counts and correlation and existing events can be backfilled. This is a design recommendation, not implemented behavior.
+
 **Event Store** — SQLite (`ravn.db`) + SQLAlchemy, using `JSON` columns for tags and Kundali signals. PostgreSQL deployment is not implemented or validated yet.
+
+**Collection recovery and hosting caveats** — the checkpoint stores each source's last successful time and web/social content hash; the collector does not use checkpoints to backfill missed dates. APScheduler runs inside the API process with its in-memory job store. Its 12-hour misfire grace can run a delayed callback while that process remains alive, but the callback still selects the current Asia/Kolkata date; it does not recover the prior date, and a process restart loses the pending schedule. SQLite is the current local database; Railway/Render persistent-volume and single-scheduler-instance behavior have not been configured or validated. A production deployment needs durable database storage and a reliable, single-owner scheduler or external scheduled worker.
+
+**Testing status** — the existing `tests/` scripts are manual print-and-inspect checks. There is no automated daily-collector coverage for date boundaries, deduplication, undated source items, or baseline handling.
 
 **Weekly Signal Detector** — planned; the current `weekly/detector.py` is an empty placeholder.
 
@@ -167,7 +179,7 @@ Conceptual schema — fields and relationships, not raw SQL.
 | `raw_content` | TEXT — full commit message / job post / blog text |
 | `one_liner` | TEXT — dashboard summary |
 | `collection_date` | Asia/Kolkata calendar date assigned to this daily collection |
-| `tags` | JSON array |
+| `tags` | JSON array of fixed source/type labels today; semantic product/topic tags are not implemented |
 | `event_date` | when the event happened |
 | `ingested_at` | when RAVN captured it |
 | `is_baseline` | Hide first-run baseline records, including initial web/social snapshots, from the daily event feed |
@@ -221,7 +233,7 @@ The implemented pipeline uses bounded LLM calls for onboarding link classificati
 3. **Kundali Builder** (background job) — builds the Day-0 historical baseline profile per target.
 4. **Daily Collector** (scheduled at 11:59 PM Asia/Kolkata, or manually triggered) — records current-date activity and stores one highlight per configured source for that date.
 5. **Event Store** (SQLite) — holds users, targets, Kundali profiles, daily events, checkpoints, and daily summaries. PostgreSQL support and weekly tables are planned.
-6. **Weekly Signal Detector** (planned) — tags events and detects single-week spikes and multi-week trends.
+6. **Weekly Signal Detector** (planned) — consumes events after a semantic tagging step has been designed and implemented, then detects single-week spikes and multi-week trends. Current source/type labels are insufficient; tagging ownership and taxonomy remain open design decisions.
 7. **Weekly Narrator** (planned) — verifies and writes the executive digest.
 8. **PDF Exporter** (planned) — generates a downloadable PDF of a digest, on request.
 9. **Dashboard/UI** (planned) — will display one-liners, drilldowns, Kundali profiles, and digests, scoped per user.
