@@ -1,6 +1,6 @@
 import unittest
 from datetime import date, datetime, timezone
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -111,6 +111,83 @@ class DailyCollectorTests(unittest.TestCase):
         self.assertEqual(first["sources"]["web_social"]["event_count"], 0)
         self.assertEqual(second["sources"]["web_social"]["new_events"], 1)
         self.assertEqual(second["sources"]["web_social"]["event_count"], 1)
+
+    def test_undated_ats_and_blog_lists_are_baselined_then_new_items_are_events(self):
+        self.target.ats_url = "https://careers.example.com/jobs"
+        self.target.blog_url = "https://example.com/blog"
+        self.session.commit()
+        ats_items = [{
+            "title": "Existing role",
+            "location": "Remote",
+            "url": "https://careers.example.com/jobs/existing",
+            "posted_at": None,
+        }]
+        blog_items = [{
+            "title": "Existing post",
+            "link": "https://example.com/blog/existing",
+            "published": None,
+        }]
+
+        with (
+            patch.object(collectors, "get_ats_postings", side_effect=lambda *a, **k: list(ats_items)),
+            patch.object(collectors, "get_blog_posts", side_effect=lambda *a, **k: list(blog_items)),
+        ):
+            first = collectors.collect_target_events(self.session, self.target, date(2026, 11, 5))
+            ats_items.append({
+                "title": "New role",
+                "location": "Remote",
+                "url": "https://careers.example.com/jobs/new",
+                "posted_at": None,
+            })
+            blog_items.append({
+                "title": "New post",
+                "link": "https://example.com/blog/new",
+                "published": None,
+            })
+            second = collectors.collect_target_events(self.session, self.target, date(2026, 11, 5))
+
+        ats_events = self.session.query(Event).filter_by(
+            target_id=self.target.id, source_type="ats"
+        ).all()
+        blog_events = self.session.query(Event).filter_by(
+            target_id=self.target.id, source_type="blog"
+        ).all()
+        self.assertEqual({event.title: event.is_baseline for event in ats_events}, {
+            "Existing role": True, "New role": False,
+        })
+        self.assertEqual({event.title: event.is_baseline for event in blog_events}, {
+            "Existing post": True, "New post": False,
+        })
+        self.assertEqual(first["sources"]["ats"]["event_count"], 0)
+        self.assertEqual(first["sources"]["blog"]["event_count"], 0)
+        self.assertEqual(second["sources"]["ats"]["new_events"], 1)
+        self.assertEqual(second["sources"]["blog"]["new_events"], 1)
+
+    def test_lever_created_at_is_used_as_posted_date(self):
+        self.target.ats_url = "https://jobs.lever.co/example"
+        self.session.commit()
+        published_at = datetime(2026, 11, 5, 9, 0, tzinfo=timezone.utc)
+        response = Mock(status_code=200)
+        response.json.return_value = [{
+            "text": "Backend Engineer",
+            "categories": {"location": "Remote"},
+            "hostedUrl": "https://jobs.lever.co/example/backend-engineer",
+            "createdAt": int(published_at.timestamp() * 1000),
+        }]
+
+        with (
+            patch("app.daily.fetchers.ats.httpx.get", return_value=response),
+            patch.object(collectors, "_fetch_full_text", return_value="Role description"),
+            patch.object(collectors, "get_new_commits", return_value=[]),
+        ):
+            result = collectors.collect_target_events(self.session, self.target, date(2026, 11, 5))
+
+        event = self.session.query(Event).filter_by(
+            target_id=self.target.id, source_type="ats"
+        ).one()
+        self.assertEqual(event.title, "Backend Engineer")
+        self.assertEqual(event.event_date.replace(tzinfo=timezone.utc), published_at)
+        self.assertEqual(result["sources"]["ats"]["new_events"], 1)
 
 
 if __name__ == "__main__":

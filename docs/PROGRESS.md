@@ -283,7 +283,8 @@ Lists only what has been written and tested so far. No plans, no roadmap.
 - `app/daily/collectors.py` — runs GitHub, ATS, blog, and web/social collection independently;
   restricts dated events to the current Asia/Kolkata calendar date; stores full events and updates a
   per-target/date/source summary with status, count, and a concise highlight. Undated ATS/blog items
-  are excluded; first-run web snapshots are baseline events. Stored tags are fixed source/type labels;
+  are baselined on the initial snapshot, then new listings are recorded with first-observed time;
+  first-run web snapshots are also baseline events. Stored tags are fixed source/type labels;
   semantic product/topic tagging for the planned weekly detector has not been implemented.
 - `app/events/routes.py` — provides authenticated, target-owner-scoped endpoints:
   `POST /targets/{id}/daily/collect`, `GET /targets/{id}/daily/events` (source, since, limit,
@@ -294,15 +295,16 @@ Lists only what has been written and tested so far. No plans, no roadmap.
   Asia/Kolkata, using the same current-date collector as the manual endpoint. The checkpoint table
   does not provide missed-date recovery; the in-memory scheduler and current-date selection can leave
   a gap after downtime or restart.
-- Alembic migrations `c4f3b2a1d9e0`, `d8e4c1f7a260`, `e91f2a7c4b60`, and `f4c91a6d2e80` add events,
-  checkpoints, per-date source summaries, and backfill summaries for existing event and baseline data.
+- Alembic migrations `c4f3b2a1d9e0`, `d8e4c1f7a260`, `e91f2a7c4b60`, `f4c91a6d2e80`, and
+  `c73a9b8e21d4` add events, checkpoints, per-date summaries, historical baseline summaries, and the
+  marker used to baseline existing undated ATS/blog listings after upgrade.
 
 ## Verification & Test Scripts
 - `tests/test.py` — GitHub parsing layer runner covering `extract_account_name`,
   `get_account_type`, `list_repos`, `get_commit_activity`, `get_recent_commits`, `get_languages`.
   Run via `python -m tests.test`.
 - `tests/retest.py` — End-to-end database verification script: queries the database for the latest target Kundali profile and prints all empirical signals (`tech_stack`, `cadence_baseline`, `recent_commits`, `ats_postings`, `web_social_status`, `blog_status`) along with the synthesized strategic intelligence themes. Run via `python -m tests.retest`.
-- There is no automated daily-collector test coverage yet; the scripts above are manual print-and-inspect checks.
+- `tests/test_daily_collector.py` — automated tests for Asia/Kolkata date boundaries, repeated-run deduplication, web baseline behavior, undated ATS/blog baseline and first-seen handling, and Lever `createdAt` timestamps. Run via `python -m unittest tests.test_daily_collector -v`.
 
 ---
 

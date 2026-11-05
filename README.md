@@ -64,7 +64,13 @@ Interactive Swagger API documentation will be available at [http://127.0.0.1:800
 
 ## Verification & Testing
 
-RAVN includes manual test and verification scripts (print-and-inspect; not assertion-based):
+RAVN includes manual verification scripts and an automated daily-collector test suite:
+
+- **Daily Collector tests**:
+  ```bash
+  python -m unittest tests.test_daily_collector -v
+  ```
+  Checks the date window, repeat-run deduplication, baselines, undated ATS/blog listings, and Lever timestamp parsing.
 
 - **GitHub Ingestion Verification Script**:
   ```bash

@@ -38,6 +38,7 @@ class DailySourceCheckpoint(Base):
     source_type: Mapped[str] = mapped_column(String(32), nullable=False)
     last_success_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     last_content_hash: Mapped[str | None] = mapped_column(String(64))
+    undated_items_baselined_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class DailySourceSummary(Base):

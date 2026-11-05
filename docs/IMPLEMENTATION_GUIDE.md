@@ -109,11 +109,13 @@ Automated competitive intelligence for tech & AI companies. RAVN watches a targe
 
 **Daily Collector** — collects events dated on the current Asia/Kolkata calendar date (00:00 through 23:59), then stores full event detail and one source highlight/status for each of GitHub, ATS, blog, and web/social. The scheduled run is at 23:59 Asia/Kolkata; manual runs use the same date window. Event one-liners and per-source highlights use deterministic formatting, not an LLM. Pull request and dependency-change events remain part of the broader project scope but are not collected by this implementation yet.
 
-ATS and blog items without a parseable source date are dropped; the collector does not infer when they were published. A live fetch on 2026-11-05 against the configured ready targets found four target records but only one unique ATS URL and one unique blog URL (all four records point to Stripe): 0/5 ATS listings and 0/15 blog entries had dates. This is a point-in-time sample, not a representative measurement across companies. For this configured target, no hiring or blog events reached the event store; until date handling is resolved, weekly cross-source counts and confidence would be biased toward GitHub and web/social.
+ATS/blog items with a source date are stored only when that date falls on the collection date. For undated listings, RAVN stores the first successful listing snapshot as baseline records, then records newly appearing listings with the time RAVN first observed them. Those event dates mean “first observed by RAVN,” not the employer's publication date. Existing listings in the initial snapshot are excluded from the daily feed and highlights so they are not misreported as new activity.
 
-The missing Stripe ATS dates are explained by the current fetch path: `https://stripe.com/careers` is not recognized as one of the supported ATS API hosts, so `get_ats_postings()` uses the company-page HTML fallback. That fallback extracts listing links/titles and explicitly sets `posted_at` to `None`; it does not parse the linked job detail page for a publication date. The collector never receives a source date to normalize. For provider-specific adapters, the code currently maps Greenhouse `updated_at`, Lever `createdAt`, Ashby `publishedAt`, and Workable `published_on`/`created_at`. Greenhouse's [Job Board API docs](https://docs.greenhouse.io/job-board) show `updated_at` in list responses and `first_published` on individual job responses. Ashby's [public job posting API docs](https://developers.ashbyhq.com/docs/public-job-posting-api) specify `publishedAt`, and a sample Ashby feed returned that field. Lever's [public Postings API field list](https://github.com/lever/postings-api#api-methods) does not document `createdAt`, so its mapping still needs to be checked against a real raw board response before relying on it. No configured target uses these three ATS board types, and a raw Stripe-page fetch from the local runtime was unavailable during this review because DNS resolution failed. Do not generalize the Stripe fallback result to those ATS APIs.
+A live fetch on 2026-11-05 against the configured ready targets found four target records but only one unique ATS URL and one unique blog URL (all four records point to Stripe): 0/5 ATS listings and 0/15 blog entries had source dates. This is a point-in-time sample, not a representative measurement across companies. The HTML fallback for Stripe does not parse dates from job detail pages; undated listings are now handled through initial snapshot baselining and first-seen tracking instead.
 
-Whether to use a first-seen date for undated listings remains open. That would mean the event represents “first observed by RAVN,” not the employer's posting date, and requires reliably diffing full listing snapshots over time; the current checkpoint only stores a last-success timestamp and one web/social hash, not an ATS/blog listing snapshot. It should be modeled and labeled as an observation date rather than silently treated as a source publication date.
+The Stripe URL `https://stripe.com/careers` is not recognized as one of the supported ATS API hosts, so `get_ats_postings()` uses the company-page HTML fallback. That fallback extracts listing links/titles and sets `posted_at` to `None`; it does not parse the linked job detail page for a publication date. For provider-specific adapters, the code maps Greenhouse `updated_at`, Lever `createdAt`, Ashby `publishedAt`, and Workable `published_on`/`created_at`. Greenhouse's [Job Board API docs](https://docs.greenhouse.io/job-board) show `updated_at` in list responses and `first_published` on individual job responses. Ashby's [public job posting API docs](https://developers.ashbyhq.com/docs/public-job-posting-api) specify `publishedAt`. A real Lever public board response was checked and contains `createdAt` as a Unix millisecond timestamp, which the collector's date parser supports. Lever's [public Postings API](https://github.com/lever/postings-api#api-methods) provides the public JSON postings endpoint.
+
+The source checkpoint now records whether the initial undated ATS/blog listing snapshot has been baselined. Existing checkpoints are unmarked by the migration, so the first successful collection after upgrade baselines the listings it sees; later unseen listings are recorded as first-observed events. This avoids treating all currently open roles as newly posted immediately after deployment.
 
 The collector adds fixed source/type labels (`github`, `commit`; `hiring`, `job_posting`; `engineering`, `blog`; `web_update`). These are not the product/topic taxonomy needed for cross-source spike and trend analysis. The weekly detector and semantic tagging are not implemented. Recommended design to settle before detector work: a separate deterministic tagging step that assigns a versioned taxonomy at ingestion, so detector logic can focus on counts and correlation and existing events can be backfilled. This is a design recommendation, not implemented behavior.
 
@@ -121,7 +123,7 @@ The collector adds fixed source/type labels (`github`, `commit`; `hiring`, `job_
 
 **Collection recovery and hosting caveats** — the checkpoint stores each source's last successful time and web/social content hash; the collector does not use checkpoints to backfill missed dates. APScheduler runs inside the API process with its in-memory job store. Its 12-hour misfire grace can run a delayed callback while that process remains alive, but the callback still selects the current Asia/Kolkata date; it does not recover the prior date, and a process restart loses the pending schedule. SQLite is the current local database; Railway/Render persistent-volume and single-scheduler-instance behavior have not been configured or validated. A production deployment needs durable database storage and a reliable, single-owner scheduler or external scheduled worker.
 
-**Testing status** — the existing `tests/` scripts are manual print-and-inspect checks. There is no automated daily-collector coverage for date boundaries, deduplication, undated source items, or baseline handling.
+**Testing status** — existing integration scripts remain manual print-and-inspect checks. `tests/test_daily_collector.py` adds automated coverage for Asia/Kolkata date boundaries, repeat-run deduplication, web baseline handling, undated ATS/blog snapshot baselining and new listings, and Lever `createdAt` parsing.
 
 **Weekly Signal Detector** — planned; the current `weekly/detector.py` is an empty placeholder.
 
@@ -180,9 +182,9 @@ Conceptual schema — fields and relationships, not raw SQL.
 | `one_liner` | TEXT — dashboard summary |
 | `collection_date` | Asia/Kolkata calendar date assigned to this daily collection |
 | `tags` | JSON array of fixed source/type labels today; semantic product/topic tags are not implemented |
-| `event_date` | when the event happened |
+| `event_date` | Source event time when available; otherwise first-observed time for undated ATS/blog listings |
 | `ingested_at` | when RAVN captured it |
-| `is_baseline` | Hide first-run baseline records, including initial web/social snapshots, from the daily event feed |
+| `is_baseline` | Hide initial web/social snapshots and initial undated ATS/blog listings from the daily event feed |
 
 ### `daily_source_checkpoints`
 | Field | Notes |
@@ -190,6 +192,7 @@ Conceptual schema — fields and relationships, not raw SQL.
 | `target_id`, `source_type` | Unique checkpoint per target and source |
 | `last_success_at` | Timestamp of the last successful source collection |
 | `last_content_hash` | Most recent web/social snapshot hash, used to detect page changes |
+| `undated_items_baselined_at` | Marks the initial undated ATS/blog listing snapshot so existing open listings are not emitted as new events |
 
 ### `daily_source_summaries`
 | Field | Notes |

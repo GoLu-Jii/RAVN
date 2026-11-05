@@ -235,9 +235,13 @@ def collect_target_events(db: Session, target: Target, collection_date: date | N
             .first()
         )
         first_run = checkpoint is None
+        first_undated_snapshot = (
+            source_type in {"ats", "blog"}
+            and (checkpoint is None or checkpoint.undated_items_baselined_at is None)
+        )
         inserted = 0
         baseline_inserted = 0
-        ignored_undated = 0
+        undated_items = 0
         ignored_out_of_day = 0
         try:
             candidates = _candidate_events(db, target, source_type, since)
@@ -255,20 +259,21 @@ def collect_target_events(db: Session, target: Target, collection_date: date | N
                     event_date = observed_at
                 else:
                     if source_event_date is None:
-                        ignored_undated += 1
-                        continue
-                    event_date = _as_utc(source_event_date)
-                    if event_date.astimezone(COLLECTION_TIMEZONE).date() != collection_date:
-                        ignored_out_of_day += 1
-                        continue
+                        undated_items += 1
+                        event_date = observed_at
+                    else:
+                        event_date = _as_utc(source_event_date)
+                        if event_date.astimezone(COLLECTION_TIMEZONE).date() != collection_date:
+                            ignored_out_of_day += 1
+                            continue
 
                     # Fetch long-form content only after confirming that the
-                    # source timestamp belongs to this collection date.
-                    if source_type == "ats":
+                    # dated source timestamp belongs to this collection date.
+                    if source_event_date is not None and source_type == "ats":
                         details = _fetch_full_text(item["url"])
                         if details:
                             item["raw_content"] += f"\nDescription: {details}"
-                    elif source_type == "blog":
+                    elif source_event_date is not None and source_type == "blog":
                         item["raw_content"] = _fetch_full_text(
                             item["url"], item["raw_content"]
                         ) or item["raw_content"]
@@ -280,7 +285,13 @@ def collect_target_events(db: Session, target: Target, collection_date: date | N
                 ).first()
                 if exists:
                     continue
-                is_baseline = first_run and source_type == "web_social" and source_event_date is None
+                is_baseline = (
+                    first_run and source_type == "web_social" and source_event_date is None
+                ) or (
+                    first_undated_snapshot
+                    and source_type in {"ats", "blog"}
+                    and source_event_date is None
+                )
                 db.add(Event(
                     target_id=target.id,
                     source_type=source_type,
@@ -308,6 +319,8 @@ def collect_target_events(db: Session, target: Target, collection_date: date | N
                 db.add(checkpoint)
             else:
                 checkpoint.last_success_at = now
+            if source_type in {"ats", "blog"} and checkpoint.undated_items_baselined_at is None:
+                checkpoint.undated_items_baselined_at = now
             if source_type == "web_social" and candidates:
                 checkpoint.last_content_hash = candidates[-1]["content_hash"]
             db.flush()
@@ -319,7 +332,7 @@ def collect_target_events(db: Session, target: Target, collection_date: date | N
                 "baseline_events": baseline_inserted,
                 "event_count": summary.event_count,
                 "highlight": summary.highlight,
-                "ignored_undated": ignored_undated,
+                "undated_items": undated_items,
                 "ignored_out_of_day": ignored_out_of_day,
             }
         except Exception as exc:
