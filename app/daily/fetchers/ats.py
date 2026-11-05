@@ -25,7 +25,7 @@ def _extract_board_token(ats_url: str) -> str | None:
     return path[-1]
 
 
-def fetch_greenhouse_jobs(ats_url: str) -> list[dict]:
+def fetch_greenhouse_jobs(ats_url: str, strict: bool = False) -> list[dict]:
     token = _extract_board_token(ats_url)
     if not token:
         return []
@@ -35,10 +35,14 @@ def fetch_greenhouse_jobs(ats_url: str) -> list[dict]:
     try:
         response = httpx.get(api_url, timeout=10)
     except httpx.RequestError as e:
+        if strict:
+            raise
         print(f"[fetch_greenhouse_jobs] network error for {token}: {e}")
         return []
 
     if response.status_code != 200:
+        if strict:
+            response.raise_for_status()
         print(f"[fetch_greenhouse_jobs] {token} returned {response.status_code}")
         return []
 
@@ -55,7 +59,7 @@ def fetch_greenhouse_jobs(ats_url: str) -> list[dict]:
     ]
 
 
-def fetch_lever_jobs(ats_url: str) -> list[dict]:
+def fetch_lever_jobs(ats_url: str, strict: bool = False) -> list[dict]:
     token = _extract_board_token(ats_url)
     if not token:
         return []
@@ -65,10 +69,14 @@ def fetch_lever_jobs(ats_url: str) -> list[dict]:
     try:
         response = httpx.get(api_url, timeout=10)
     except httpx.RequestError as e:
+        if strict:
+            raise
         print(f"[fetch_lever_jobs] network error for {token}: {e}")
         return []
 
     if response.status_code != 200:
+        if strict:
+            response.raise_for_status()
         print(f"[fetch_lever_jobs] {token} returned {response.status_code}")
         return []
 
@@ -85,7 +93,7 @@ def fetch_lever_jobs(ats_url: str) -> list[dict]:
     ]
 
 
-def fetch_ashbyhq_jobs(ats_url: str) -> list[dict]:
+def fetch_ashbyhq_jobs(ats_url: str, strict: bool = False) -> list[dict]:
     """
     UNVERIFIED - Ashby's public posting API is less standardized than
     Greenhouse/Lever's. This assumes the common documented shape
@@ -101,10 +109,14 @@ def fetch_ashbyhq_jobs(ats_url: str) -> list[dict]:
     try:
         response = httpx.get(api_url, timeout=10)
     except httpx.RequestError as e:
+        if strict:
+            raise
         print(f"[fetch_ashbyhq_jobs] network error for {token}: {e}")
         return []
 
     if response.status_code != 200:
+        if strict:
+            response.raise_for_status()
         print(f"[fetch_ashbyhq_jobs] {token} returned {response.status_code}")
         return []
 
@@ -121,7 +133,7 @@ def fetch_ashbyhq_jobs(ats_url: str) -> list[dict]:
     ]
 
 
-def fetch_workable_jobs(ats_url: str) -> list[dict]:
+def fetch_workable_jobs(ats_url: str, strict: bool = False) -> list[dict]:
     token = _extract_board_token(ats_url)
     if not token:
         return []
@@ -131,10 +143,14 @@ def fetch_workable_jobs(ats_url: str) -> list[dict]:
     try:
         response = httpx.get(api_url, timeout=10)
     except httpx.RequestError as e:
+        if strict:
+            raise
         print(f"[fetch_workable_jobs] network error for {token}: {e}")
         return []
 
     if response.status_code != 200:
+        if strict:
+            response.raise_for_status()
         print(f"[fetch_workable_jobs] {token} returned {response.status_code}")
         return []
 
@@ -151,7 +167,7 @@ def fetch_workable_jobs(ats_url: str) -> list[dict]:
     ]
 
 
-def _extract_jobs_from_html(ats_url: str, max_jobs: int = 30) -> list[dict]:
+def _extract_jobs_from_html(ats_url: str, max_jobs: int = 30, strict: bool = False) -> list[dict]:
     """
     Fallback extractor for company-hosted careers pages (e.g. stripe.com/careers).
     Probes the page and common subpaths for job listing links or embedded ATS boards.
@@ -170,12 +186,18 @@ def _extract_jobs_from_html(ats_url: str, max_jobs: int = 30) -> list[dict]:
 
     jobs = []
     seen = set()
+    fetched_page = False
+    last_error = None
 
     for url in urls_to_try:
         try:
             r = httpx.get(url, headers=headers, timeout=8, follow_redirects=True)
             if r.status_code != 200:
+                last_error = httpx.HTTPStatusError(
+                    f"Career page returned {r.status_code}", request=r.request, response=r
+                )
                 continue
+            fetched_page = True
             soup = BeautifulSoup(r.text, "html.parser")
 
             # 1. Check if page references an external ATS (Greenhouse, Lever, etc.)
@@ -183,7 +205,7 @@ def _extract_jobs_from_html(ats_url: str, max_jobs: int = 30) -> list[dict]:
                 href = a.get("href", "")
                 ext_platform = detect_ats_platform(href)
                 if ext_platform:
-                    ext_jobs = get_ats_postings(href)
+                    ext_jobs = get_ats_postings(href, strict=strict)
                     if ext_jobs:
                         return ext_jobs[:max_jobs]
 
@@ -213,33 +235,53 @@ def _extract_jobs_from_html(ats_url: str, max_jobs: int = 30) -> list[dict]:
                 if len(jobs) >= max_jobs:
                     break
         except Exception as e:
+            last_error = e
+            if strict:
+                continue
             print(f"[_extract_jobs_from_html] failed on {url}: {e}")
 
         if jobs:
             break
 
+    if strict and not fetched_page and last_error:
+        raise last_error
     return jobs
 
 
-def get_ats_postings(ats_url: str) -> list[dict]:
+def get_ats_postings(ats_url: str, strict: bool = False) -> list[dict]:
     if not ats_url:
         return []
 
     platform = detect_ats_platform(ats_url)
     
-    if platform == "Greenhouse":
-        metadata = fetch_greenhouse_jobs(ats_url)
-    elif platform == "lever":
-        metadata = fetch_lever_jobs(ats_url)
-    elif platform == "ashbyhq":
-        metadata = fetch_ashbyhq_jobs(ats_url)
-    elif platform == "workable":
-        metadata = fetch_workable_jobs(ats_url)
-    else:
+    api_error = None
+    try:
+        if platform == "Greenhouse":
+            metadata = fetch_greenhouse_jobs(ats_url, strict=strict)
+        elif platform == "lever":
+            metadata = fetch_lever_jobs(ats_url, strict=strict)
+        elif platform == "ashbyhq":
+            metadata = fetch_ashbyhq_jobs(ats_url, strict=strict)
+        elif platform == "workable":
+            metadata = fetch_workable_jobs(ats_url, strict=strict)
+        else:
+            metadata = []
+    except Exception as exc:
+        if not strict:
+            raise
+        api_error = exc
         metadata = []
 
     # If no standard ATS API matched or returned empty, try HTML careers fallback
     if not metadata:
-        metadata = _extract_jobs_from_html(ats_url)
+        try:
+            metadata = _extract_jobs_from_html(ats_url, strict=strict)
+        except Exception:
+            if api_error:
+                raise api_error
+            raise
+
+    if strict and api_error and not metadata:
+        raise api_error
 
     return metadata

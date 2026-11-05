@@ -272,6 +272,28 @@ Lists only what has been written and tested so far. No plans, no roadmap.
 
 ---
 
+## Daily collection and event feed
+- `app/events/models.py` — `Event` stores source identity, title, URL, full content, one-liner,
+  event/ingestion timestamps, tags, and a baseline flag. A unique target/source/source-key constraint
+  prevents duplicate events. `DailySourceCheckpoint` tracks the last successful collection per source.
+- `app/daily/fetchers/github.py` — pages through the target's public repositories in stable
+  name order, then fetches commits from recently pushed repositories for the current Asia/Kolkata
+  calendar date only. Pull requests and dependency changes are listed in
+  the broader project scope but are not part of the implemented daily event types yet.
+- `app/daily/collectors.py` — runs GitHub, ATS, blog, and web/social collection independently;
+  restricts dated events to the current Asia/Kolkata calendar date; stores full events and updates a
+  per-target/date/source summary with status, count, and a concise highlight. Undated ATS/blog items
+  are excluded; first-run web snapshots are baseline events.
+- `app/events/routes.py` — provides authenticated, target-owner-scoped endpoints:
+  `POST /targets/{id}/daily/collect`, `GET /targets/{id}/daily/events` (source, since, limit,
+  offset filters; baseline and raw content excluded), `GET /targets/{id}/daily/summaries` (four
+  per-source highlights for a date), `GET /targets/{id}/daily/summaries/dates`, and
+  `GET /targets/{id}/daily/events/{event_id}` (full detail).
+- `app/scheduler/jobs.py` and `app/main.py` — start a daily APScheduler job at 11:59 PM
+  Asia/Kolkata, using the same current-date collector as the manual endpoint.
+- Alembic migrations `c4f3b2a1d9e0`, `d8e4c1f7a260`, and `e91f2a7c4b60` add events, checkpoints,
+  per-date source summaries, and backfill date/highlight records from existing stored events.
+
 ## Verification & Test Scripts
 - `tests/test.py` — GitHub parsing layer runner covering `extract_account_name`,
   `get_account_type`, `list_repos`, `get_commit_activity`, `get_recent_commits`, `get_languages`.
@@ -281,12 +303,8 @@ Lists only what has been written and tested so far. No plans, no roadmap.
 ---
 
 ## Scaffolding (not yet implemented)
-Empty placeholder files exist for future components, created ahead of time to match the
-repo structure in `IMPLEMENTATION_GUIDE.md` — no logic written yet:
+Empty placeholder files remain for future components:
 - `app/config.py`
 - `app/export/pdf.py`
-- `app/scheduler/jobs.py`
-- `app/daily/collectors.py`, `app/daily/fetchers/github.py`
-- `app/events/models.py`, `app/events/routes.py`
 - `app/weekly/detector.py`, `app/weekly/models.py`,
   `app/weekly/narrator/{analyst,critic,verifier,writer}.py`

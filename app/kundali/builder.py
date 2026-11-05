@@ -12,11 +12,13 @@ GITHUB_API_BASE = "https://api.github.com"
 
 
 def _get_headers() -> dict:
-    return {
-        "Authorization": f"Bearer {GITHUB_TOKEN}",
+    headers = {
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
     }
+    if GITHUB_TOKEN:
+        headers["Authorization"] = f"Bearer {GITHUB_TOKEN}"
+    return headers
 
 
 def extract_account_name(github_url: str) -> str:
@@ -33,6 +35,7 @@ def get_account_type(name: str) -> str:
     response = httpx.get(
         f"{GITHUB_API_BASE}/users/{name}",
         headers=_get_headers(),
+        timeout=15,
     )
     response.raise_for_status()
     return response.json()["type"]

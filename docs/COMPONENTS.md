@@ -34,17 +34,18 @@
 
 ## 4. Daily Collector
 
-- **Trigger:** Scheduled, runs once per day per active target, independent per source type (isolated failure handling)
+- **Trigger:** Scheduled for 11:59 PM Asia/Kolkata once per day for ready targets, or manually via `POST /targets/{id}/daily/collect`; each source is handled independently.
 - **Input:** Target's confirmed source URLs + last-checked timestamp (so it only pulls new activity)
 - **Output:** New raw events (commits, job posts, blog posts, web updates) → written to the event store, plus one-liner summaries for the dashboard
-- **Feeds:** Full-detail events + one-liners → Event Store; updates last-checked markers for next run
+- **Feeds:** Collects only events dated on the current Asia/Kolkata calendar date. Full-detail events and one-liners go to the Event Store; one status, count, and highlight is saved for each of the four source types per target/date. First-run web snapshots are treated as baseline.
+- **History:** `GET /targets/{id}/daily/summaries` reads the four highlights for a date; `/daily/summaries/dates` lists saved dates.
 
 ---
 
 ## 5. Event Store
 
 - **Trigger:** None — it's passive, written to by Kundali builder and Daily collector, read by everything else
-- **Input:** Full-detail events from #3 and #4
+- **Input:** Target/Kundali records from #3 and daily event records from #4
 - **Output:** On request — full event history for a target, or a specific week's events; also serves most-recent-first queries (dashboard feed), single-event lookups (drilldown), and user-scoped filtering
 - **Holds:** User accounts, target registry (owner, sources, status), Kundali profiles, unified daily events table (tagged by source type), and weekly category-count history (for trend comparison)
 

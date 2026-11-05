@@ -24,7 +24,7 @@ ravn/
 │   ├── daily/
 │   │   ├── collectors.py       # scheduled daily job, per-source fetchers
 │   │   └── fetchers/
-│   │       ├── github.py       # daily GitHub commit/PR fetcher
+│   │       ├── github.py       # daily GitHub commit fetcher
 │   │       ├── ats.py          # ATS API fetcher (Greenhouse/Lever/Ashby/Workable) + HTML career portal fallback
 │   │       ├── blogs.py        # RSS/Atom feed parser + trafilatura HTML article fallback
 │   │       └── socials.py      # web landing page & social updates
@@ -105,7 +105,7 @@ Automated competitive intelligence for tech & AI companies. RAVN watches a targe
 
 **Kundali Builder** — `httpx` for GitHub REST API calls (languages, commit cadence, active repos), `feedparser` for RSS/Atom feeds with `trafilatura` HTML article scraping fallback for non-RSS blogs, and ATS API probing with HTML career portal fallback for company-hosted job sites. Derives a multi-track strategic intelligence dossier via LLM synthesis.
 
-**Daily Collector** — reuses the same fetching tools as the Kundali Builder, run incrementally per source.
+**Daily Collector** — collects events dated on the current Asia/Kolkata calendar date (12:00 AM–11:59 PM), then stores full event detail and one source highlight/status for each of GitHub, ATS, blog, and web/social. It runs daily at 11:59 PM Asia/Kolkata or through the manual collection endpoint. Pull request and dependency-change events remain part of the broader project scope but are not collected by this implementation yet.
 
 **Event Store** — SQLite (`ravn.db` in local dev) / PostgreSQL + SQLAlchemy, using `JSON` columns for flexible multi-channel signals (tags, tech stack, dossiers).
 
@@ -160,11 +160,31 @@ Conceptual schema — fields and relationships, not raw SQL.
 | `id` | PK |
 | `target_id` | FK → `targets` |
 | `source_type` | `github` / `ats` / `blog` / `web_social` |
-| `tags` | JSON array, from the tag taxonomy |
+| `source_key` | Stable source identifier; unique with target and source type for deduplication |
+| `title`, `url` | Event title and source link |
 | `raw_content` | TEXT — full commit message / job post / blog text |
 | `one_liner` | TEXT — dashboard summary |
+| `collection_date` | Asia/Kolkata calendar date assigned to this daily collection |
+| `tags` | JSON array |
 | `event_date` | when the event happened |
 | `ingested_at` | when RAVN captured it |
+| `is_baseline` | Hide the first web/social snapshot when there is no previous snapshot to compare |
+
+### `daily_source_checkpoints`
+| Field | Notes |
+|---|---|
+| `target_id`, `source_type` | Unique checkpoint per target and source |
+| `last_success_at` | Timestamp of the last successful source collection |
+| `last_content_hash` | Most recent web/social snapshot hash, used to detect page changes |
+
+### `daily_source_summaries`
+| Field | Notes |
+|---|---|
+| `target_id`, `collection_date`, `source_type` | Unique source summary for each target and date |
+| `status` | `success`, `failed`, or `skipped` |
+| `event_count` | Current-day events stored for this source |
+| `highlight` | Concise stored summary; records “no events” when the source returns none |
+| `error`, `collected_at` | Latest source error and collection time |
 
 ### `weekly_category_counts` (lightweight, for trend comparison)
 | Field | Notes |
@@ -197,8 +217,8 @@ RAVN operates as a fixed, deterministic pipeline with LLM calls at specific, bou
 1. **Auth Handler** — sign-up/login, session tokens, scopes all requests to the logged-in user.
 2. **Onboarding Handler** — resolves a company website URL into confirmed source URLs (GitHub, ATS, blog, web/social), with user review.
 3. **Kundali Builder** (background job) — builds the Day-0 historical baseline profile per target.
-4. **Daily Collector** (scheduled) — logs new activity across all sources daily, in full detail, with one-liner summaries.
-5. **Event Store** (PostgreSQL) — holds users, targets, Kundali profiles, daily events, and weekly category counts.
+4. **Daily Collector** (scheduled at 11:59 PM Asia/Kolkata, or manually triggered) — records current-date activity and stores one highlight per configured source for that date.
+5. **Event Store** (SQLite locally; PostgreSQL supported) — holds users, targets, Kundali profiles, daily events, and weekly category counts.
 6. **Weekly Signal Detector** (scheduled) — tags events and detects both single-week spikes and multi-week trends.
 7. **Weekly Narrator** (multi-agent) — verifies and writes the executive digest.
 8. **PDF Exporter** — generates a downloadable PDF of a digest, on request.

@@ -15,8 +15,9 @@ UNDER CONSTRUCTION
 | **Kundali Builder (Day-0)** | Completed | Multi-channel ingestion across GitHub (repos, languages, 52-week cadence curve), ATS/careers (API + HTML scrapers), technical blogs (RSS + trafilatura HTML article extractor), and web/social snapshots. |
 | **LLM Strategic Dossier** | Completed | Kundali synthesis requests `openai/gpt-oss-120b`, routed to Groq first with Gemini and OpenRouter fallbacks; produces executive summary, strategic themes, cross-signal correlations, and predictive outlook. |
 | **Database Persistence** | Completed | SQLite (`ravn.db` for local dev) via SQLAlchemy 2.0 & Alembic migrations. Idempotent upsert of Kundali profiles with status tracking (`building` &rarr; `ready`). |
-| **REST API** | Completed | Clean FastAPI router split (`/targets/preview`, `/targets?sync=true`, `/targets/{id}/kundali/raw`, `/targets/{id}/kundali/synthesis`, `/targets/{id}/kundali`, `/targets/{id}/kundali/build`). |
-| **Daily Collector & Detector** | Planned | Next phase in the roadmap: scheduled daily ingestion into `events` table and weekly spike + trend signal detection. |
+| **REST API** | Completed | FastAPI endpoints for onboarding and Kundali, plus daily collection, dated source highlights, and event feed/detail (`/targets/{id}/daily/collect`, `/targets/{id}/daily/summaries`, `/targets/{id}/daily/events`). |
+| **Daily Collector** | Completed | Current calendar-day collection in Asia/Kolkata, with one stored highlight/status per source per date and an 11:59 PM daily schedule. |
+| **Weekly Signal Detector** | Planned | Weekly spike and trend signal detection remains a future phase. |
 
 ---
 

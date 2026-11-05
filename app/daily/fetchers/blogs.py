@@ -10,7 +10,7 @@ _HEADERS = {
 }
 
 
-def discover_feed_url(blog_url: str) -> str | None:
+def discover_feed_url(blog_url: str, strict: bool = False) -> str | None:
     """
     Attempts to discover an RSS/Atom feed URL for a given blog:
     1. Tests blog_url itself (in case an RSS feed was passed directly).
@@ -37,6 +37,8 @@ def discover_feed_url(blog_url: str) -> str | None:
                     if feed_href:
                         return urljoin(blog_url, feed_href)
     except httpx.RequestError as e:
+        if strict:
+            raise
         print(f"[discover_feed_url] initial check for {blog_url} failed: {e}")
 
     # 3. Probe common feed subpaths
@@ -55,7 +57,12 @@ def discover_feed_url(blog_url: str) -> str | None:
     return None
 
 
-def _extract_posts_from_html(blog_url: str, max_posts: int = 15) -> list[dict]:
+def _extract_posts_from_html(
+    blog_url: str,
+    max_posts: int = 15,
+    include_content: bool = True,
+    strict: bool = False,
+) -> list[dict]:
     """
     Fallback extractor when no RSS/Atom feed exists. Scrapes recent article cards
     or post links directly from the blog HTML.
@@ -63,8 +70,12 @@ def _extract_posts_from_html(blog_url: str, max_posts: int = 15) -> list[dict]:
     try:
         response = httpx.get(blog_url, headers=_HEADERS, timeout=10, follow_redirects=True)
         if response.status_code != 200:
+            if strict:
+                response.raise_for_status()
             return []
     except httpx.RequestError as e:
+        if strict:
+            raise
         print(f"[_extract_posts_from_html] failed to fetch {blog_url}: {e}")
         return []
 
@@ -110,7 +121,7 @@ def _extract_posts_from_html(blog_url: str, max_posts: int = 15) -> list[dict]:
             break
 
     # Extract snippet text for the top 3 posts using trafilatura
-    for post in posts[:3]:
+    for post in (posts[:3] if include_content else []):
         try:
             art_res = httpx.get(post["link"], headers=_HEADERS, timeout=8, follow_redirects=True)
             if art_res.status_code == 200:
@@ -123,7 +134,12 @@ def _extract_posts_from_html(blog_url: str, max_posts: int = 15) -> list[dict]:
     return posts
 
 
-def get_blog_posts(blog_url: str, max_posts: int = 15) -> list[dict]:
+def get_blog_posts(
+    blog_url: str,
+    max_posts: int = 15,
+    include_content: bool = True,
+    strict: bool = False,
+) -> list[dict]:
     """
     Primary blog post fetcher:
     - Uses discovered RSS/Atom feed if available.
@@ -132,10 +148,14 @@ def get_blog_posts(blog_url: str, max_posts: int = 15) -> list[dict]:
     if not blog_url:
         return []
 
-    feed_url = discover_feed_url(blog_url)
+    feed_url = discover_feed_url(blog_url, strict=strict)
+    feed_error = None
     if feed_url:
         try:
-            entries = feedparser.parse(feed_url).entries[:max_posts]
+            response = httpx.get(feed_url, headers=_HEADERS, timeout=10, follow_redirects=True)
+            if response.status_code != 200:
+                response.raise_for_status()
+            entries = feedparser.parse(response.content).entries[:max_posts]
             posts = []
             for entry in entries:
                 title = entry.get("title")
@@ -143,7 +163,7 @@ def get_blog_posts(blog_url: str, max_posts: int = 15) -> list[dict]:
                 published = entry.get("published")
 
                 content = None
-                if link:
+                if link and include_content:
                     try:
                         response = httpx.get(link, headers=_HEADERS, timeout=8, follow_redirects=True)
                         if response.status_code == 200:
@@ -163,7 +183,17 @@ def get_blog_posts(blog_url: str, max_posts: int = 15) -> list[dict]:
             if posts:
                 return posts
         except Exception as e:
-            print(f"[get_blog_posts] feedparser failed for {feed_url}: {e}")
+            feed_error = e
+            if not strict:
+                print(f"[get_blog_posts] feedparser failed for {feed_url}: {e}")
 
     # Fallback to direct HTML article extraction
-    return _extract_posts_from_html(blog_url, max_posts=max_posts)
+    posts = _extract_posts_from_html(
+        blog_url,
+        max_posts=max_posts,
+        include_content=include_content,
+        strict=strict,
+    )
+    if strict and feed_error and not posts:
+        raise feed_error
+    return posts

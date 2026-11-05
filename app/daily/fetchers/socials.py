@@ -2,16 +2,20 @@ import httpx
 import trafilatura
 
 
-def get_web_social_content(web_social_url: str) -> dict | None:
+def get_web_social_content(web_social_url: str, strict: bool = False) -> dict | None:
     if not web_social_url:
         return None
 
     try:
-        response = httpx.get(web_social_url, timeout=10.0)
+        response = httpx.get(web_social_url, timeout=10.0, follow_redirects=True)
     except httpx.RequestError:
+        if strict:
+            raise
         return None
 
     if response.status_code != 200:
+        if strict:
+            response.raise_for_status()
         return None
 
     content = trafilatura.extract(response.text)
