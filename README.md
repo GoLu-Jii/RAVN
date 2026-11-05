@@ -14,10 +14,10 @@ UNDER CONSTRUCTION
 | **Target Onboarding** | Completed | Dynamic URL normalization (accepts `stripe.com` or `https://stripe.com`), automated source link discovery & classification via LLM. |
 | **Kundali Builder (Day-0)** | Completed | Multi-channel ingestion across GitHub (repos, languages, 52-week cadence curve), ATS/careers (API + HTML scrapers), technical blogs (RSS + trafilatura HTML article extractor), and web/social snapshots. |
 | **LLM Strategic Dossier** | Completed | Kundali synthesis requests `openai/gpt-oss-120b`, routed to Groq first with Gemini and OpenRouter fallbacks; produces executive summary, strategic themes, cross-signal correlations, and predictive outlook. |
-| **Database Persistence** | Completed | SQLite (`ravn.db` for local dev) via SQLAlchemy 2.0 & Alembic migrations. Idempotent upsert of Kundali profiles with status tracking (`building` &rarr; `ready`). |
-| **REST API** | Completed | FastAPI endpoints for onboarding and Kundali, plus daily collection, dated source highlights, and event feed/detail (`/targets/{id}/daily/collect`, `/targets/{id}/daily/summaries`, `/targets/{id}/daily/events`). |
-| **Daily Collector** | Completed | Current calendar-day collection in Asia/Kolkata, with one stored highlight/status per source per date and an 11:59 PM daily schedule. |
-| **Weekly Signal Detector** | Planned | Weekly spike and trend signal detection remains a future phase. |
+| **Database Persistence** | Completed | SQLite (`ravn.db`) via SQLAlchemy and Alembic. Stores users, targets, Kundali profiles, daily events, source checkpoints, and per-date source summaries. |
+| **REST API** | Completed | FastAPI endpoints for onboarding and Kundali, plus daily collection, dated source highlights, event feed/detail, and saved summary dates (`/targets/{id}/daily/collect`, `/targets/{id}/daily/summaries`, `/targets/{id}/daily/summaries/dates`, `/targets/{id}/daily/events`). |
+| **Daily Collector** | Completed | Collects current Asia/Kolkata calendar-day events; stores per-source event details and one highlight/status per source/date; scheduled at 11:59 PM IST. |
+| **Weekly Signal Detector, Narrator & PDF Export** | Planned | Weekly analysis, digest generation, and PDF export remain future phases; weekly tables and jobs are not implemented. |
 
 ---
 

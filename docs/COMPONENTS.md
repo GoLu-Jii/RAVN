@@ -2,7 +2,7 @@
 
 # RAVN — Component Specification
 
-## 1. Auth Handler
+## 1. Auth Handler (Implemented)
 
 - **Trigger:** Sign-up, login, or session validation on each request
 - **Input:** User credentials or session token
@@ -11,7 +11,7 @@
 
 ---
 
-## 2. Onboarding Handler
+## 2. Onboarding Handler (Implemented)
 
 - **Trigger:** User submits a company website URL
 - **Input:** Company website URL
@@ -20,7 +20,7 @@
 
 ---
 
-## 3. Kundali Builder
+## 3. Kundali Builder (Implemented)
 
 - **Trigger:** Immediately after onboarding confirmation (runs in background or synchronously via `?sync=true`); target shows "building" in dashboard meanwhile.
 - **Input:** Confirmed source URLs for that target (GitHub, ATS/careers, blog, web/social).
@@ -32,26 +32,29 @@
 
 ---
 
-## 4. Daily Collector
+## 4. Daily Collector (Implemented)
 
 - **Trigger:** Scheduled for 11:59 PM Asia/Kolkata once per day for ready targets, or manually via `POST /targets/{id}/daily/collect`; each source is handled independently.
-- **Input:** Target's confirmed source URLs + last-checked timestamp (so it only pulls new activity)
-- **Output:** New raw events (commits, job posts, blog posts, web updates) → written to the event store, plus one-liner summaries for the dashboard
+- **Input:** Target's confirmed source URLs and the current Asia/Kolkata calendar date (12:00 AM through 11:59 PM). Repeated manual runs use the same date and deduplicate stored events.
+- **Output:** Current-date raw events (commits, dated job posts, dated blog posts, web/social changes) plus deterministic one-line event summaries; no LLM synthesis is run in this stage.
 - **Feeds:** Collects only events dated on the current Asia/Kolkata calendar date. Full-detail events and one-liners go to the Event Store; one status, count, and highlight is saved for each of the four source types per target/date. First-run web snapshots are treated as baseline.
-- **History:** `GET /targets/{id}/daily/summaries` reads the four highlights for a date; `/daily/summaries/dates` lists saved dates.
+- **Highlights:** Each source/date highlight joins up to the three newest event one-liners and reports any remaining event count. It is formatting, not LLM-generated analysis.
+- **History:** `GET /targets/{id}/daily/summaries` reads the four highlights for a date; `/daily/summaries/dates` lists dates with stored summary records. Historical baseline-only dates have `baseline_only` status; missing historical summaries report `not_recorded` because collection status cannot be inferred.
 
 ---
 
-## 5. Event Store
+## 5. Event Store (Core Implemented; Weekly Storage Planned)
 
 - **Trigger:** None — it's passive, written to by Kundali builder and Daily collector, read by everything else
 - **Input:** Target/Kundali records from #3 and daily event records from #4
-- **Output:** On request — full event history for a target, or a specific week's events; also serves most-recent-first queries (dashboard feed), single-event lookups (drilldown), and user-scoped filtering
-- **Holds:** User accounts, target registry (owner, sources, status), Kundali profiles, unified daily events table (tagged by source type), and weekly category-count history (for trend comparison)
+- **Output now:** On request — paginated event feed with source/date/time filters, single-event detail, and daily source summaries, all scoped to the target owner.
+- **Planned:** Week-specific event queries and storage for weekly category counts/digests.
+- **Holds now:** User accounts, targets, Kundali profiles, detailed daily events, per-source collection checkpoints, and per-target/date/source summaries.
+- **Planned:** Weekly category counts and weekly digests; their tables are not in the current database.
 
 ---
 
-## 6. Weekly Signal Detector
+## 6. Weekly Signal Detector (Planned)
 
 - **Trigger:** Scheduled, once per week per target, always runs regardless of activity level
 - **Input:** That week's tagged events, pulled from the event store, plus the last 4–6 weeks' stored category counts for trend comparison
@@ -64,7 +67,7 @@
 
 ---
 
-## 7. Weekly Narrator (Multi-Agent Loop)
+## 7. Weekly Narrator (Multi-Agent Loop; Planned)
 
 - **Trigger:** Signal Detector completes, always
 - **Input:** Candidate signals + their underlying raw event data
@@ -78,7 +81,7 @@
 
 ---
 
-## 8. PDF Exporter
+## 8. PDF Exporter (Planned)
 
 - **Trigger:** User requests export (on-demand only, not auto-run weekly)
 - **Input:** The written digest from #7
@@ -86,7 +89,7 @@
 
 ---
 
-## 9. Dashboard/UI
+## 9. Dashboard/UI (Planned)
 
 - **Trigger:** User opens the app
 - **Input:** One-liners from daily collector, full detail from event store (on drilldown), digests from weekly narrator — all scoped to the logged-in user's own targets via Auth Handler
@@ -97,7 +100,7 @@
 
 ## Additional Product Decisions
 
-- **Target Deletion:** Full purge — all events, Kundali profile, digests, everything tied to that target removed from the database completely. No soft-delete/archive for MVP.
+- **Target Deletion:** Planned full purge — all target data removed from the database. No target-delete endpoint is implemented yet.
 - **PDF Export:** On-demand only, generated when the user requests it.
 
 ---

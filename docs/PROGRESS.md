@@ -291,8 +291,8 @@ Lists only what has been written and tested so far. No plans, no roadmap.
   `GET /targets/{id}/daily/events/{event_id}` (full detail).
 - `app/scheduler/jobs.py` and `app/main.py` — start a daily APScheduler job at 11:59 PM
   Asia/Kolkata, using the same current-date collector as the manual endpoint.
-- Alembic migrations `c4f3b2a1d9e0`, `d8e4c1f7a260`, and `e91f2a7c4b60` add events, checkpoints,
-  per-date source summaries, and backfill date/highlight records from existing stored events.
+- Alembic migrations `c4f3b2a1d9e0`, `d8e4c1f7a260`, `e91f2a7c4b60`, and `f4c91a6d2e80` add events,
+  checkpoints, per-date source summaries, and backfill summaries for existing event and baseline data.
 
 ## Verification & Test Scripts
 - `tests/test.py` — GitHub parsing layer runner covering `extract_account_name`,

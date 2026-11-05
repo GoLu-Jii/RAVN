@@ -1,10 +1,12 @@
 ## Repository Structure
 
+This guide covers the implemented runtime and the planned product architecture. Weekly analysis, the dashboard, and PDF export are still planned components.
+
 ```
 ravn/
 ├── app/
 │   ├── main.py                 # FastAPI app entrypoint
-│   ├── config.py               # env vars, settings
+│   ├── config.py               # planned settings module; currently empty
 │   │
 │   ├── auth/
 │   │   ├── routes.py           # signup/login endpoints
@@ -12,7 +14,7 @@ ravn/
 │   │   └── utils.py            # password hashing, JWT handling
 │   │
 │   ├── targets/
-│   │   ├── routes.py           # add target, list targets, delete target
+│   │   ├── routes.py           # preview, confirm, list/status targets, Kundali endpoints
 │   │   ├── models.py           # Target model
 │   │   └── onboarding.py       # source discovery logic (scrape + LLM classify)
 │   │
@@ -22,7 +24,7 @@ ravn/
 │   │   └── synthesis.py        # orchestrates 4 data tracks, aggregates signals, DB upsert, LLM strategic intelligence dossier
 │   │
 │   ├── daily/
-│   │   ├── collectors.py       # scheduled daily job, per-source fetchers
+│   │   ├── collectors.py       # current-date collection and per-source daily summaries
 │   │   └── fetchers/
 │   │       ├── github.py       # daily GitHub commit fetcher
 │   │       ├── ats.py          # ATS API fetcher (Greenhouse/Lever/Ashby/Workable) + HTML career portal fallback
@@ -33,27 +35,27 @@ ravn/
 │   │   ├── models.py           # Event model (unified table)
 │   │   └── routes.py           # drilldown/detail endpoints
 │   │
-│   ├── weekly/
-│   │   ├── models.py           # WeeklyDigest, WeeklyCategoryCount models
-│   │   ├── detector.py         # spike + trend detection logic
-│   │   └── narrator/
+│   ├── weekly/                 # planned; placeholder modules are empty
+│   │   ├── models.py           # planned WeeklyDigest, WeeklyCategoryCount models
+│   │   ├── detector.py         # planned spike + trend detection logic
+│   │   └── narrator/           # planned Analyst / Verifier / Writer / Critic
 │   │       ├── analyst.py
 │   │       ├── verifier.py
 │   │       ├── writer.py
 │   │       └── critic.py
 │   │
 │   ├── export/
-│   │   └── pdf.py              # PDF generation from a digest
+│   │   └── pdf.py              # planned PDF generation from a digest
 │   │
 │   ├── scheduler/
-│   │   └── jobs.py             # APScheduler setup, registers daily/weekly jobs
+│   │   └── jobs.py             # APScheduler setup; daily job only
 │   │
 │   ├── llm/
 │   │   └── clients.py          # model-aware multi-provider LLM router with provider-specific fallback order
 │   │
 │   └── db/
 │       ├── database.py         # SQLAlchemy engine/session setup
-│       └── base.py             # declarative base, shared imports for models
+│       └── base.py             # shared SQLAlchemy declarative base
 │
 ├── alembic/                    # DB migrations
 ├── tests/
@@ -86,7 +88,7 @@ Automated competitive intelligence for tech & AI companies. RAVN watches a targe
 |---|---|
 | Language | Python |
 | Web framework | FastAPI |
-| Database | SQLite (`ravn.db` for local MVP) / PostgreSQL (production target) |
+| Database | SQLite (`ravn.db`, current implementation); PostgreSQL is a future deployment target |
 | ORM / migrations | SQLAlchemy + Alembic |
 | Scheduler | APScheduler |
 | Current Kundali LLM routing | Groq (`openai/gpt-oss-120b`) → Gemini → OpenRouter (fallbacks for that requested model) |
@@ -105,15 +107,15 @@ Automated competitive intelligence for tech & AI companies. RAVN watches a targe
 
 **Kundali Builder** — `httpx` for GitHub REST API calls (languages, commit cadence, active repos), `feedparser` for RSS/Atom feeds with `trafilatura` HTML article scraping fallback for non-RSS blogs, and ATS API probing with HTML career portal fallback for company-hosted job sites. Derives a multi-track strategic intelligence dossier via LLM synthesis.
 
-**Daily Collector** — collects events dated on the current Asia/Kolkata calendar date (12:00 AM–11:59 PM), then stores full event detail and one source highlight/status for each of GitHub, ATS, blog, and web/social. It runs daily at 11:59 PM Asia/Kolkata or through the manual collection endpoint. Pull request and dependency-change events remain part of the broader project scope but are not collected by this implementation yet.
+**Daily Collector** — collects events dated on the current Asia/Kolkata calendar date (00:00 through 23:59), then stores full event detail and one source highlight/status for each of GitHub, ATS, blog, and web/social. The scheduled run is at 23:59 Asia/Kolkata; manual runs use the same date window. Event one-liners and per-source highlights use deterministic formatting, not an LLM. Pull request and dependency-change events remain part of the broader project scope but are not collected by this implementation yet.
 
-**Event Store** — SQLite (`ravn.db` in local dev) / PostgreSQL + SQLAlchemy, using `JSON` columns for flexible multi-channel signals (tags, tech stack, dossiers).
+**Event Store** — SQLite (`ravn.db`) + SQLAlchemy, using `JSON` columns for tags and Kundali signals. PostgreSQL deployment is not implemented or validated yet.
 
-**Weekly Signal Detector** (`weekly/detector.py`) — pure Python logic; no additional library needed, since it's querying stored data and running comparison rules (both single-week spike checks and multi-week trend checks).
+**Weekly Signal Detector** — planned; the current `weekly/detector.py` is an empty placeholder.
 
-**Weekly Narrator** — a 4-role multi-agent loop (Analyst, Verifier, Writer, Critic), implemented as plain sequential function calls through a shared Groq client — deliberately no agent framework (e.g. LangChain/LangGraph), since the control flow is explicit and owned in code rather than delegated to a framework.
+**Weekly Narrator** — planned; the Analyst, Verifier, Writer, and Critic modules are empty placeholders.
 
-**PDF Exporter** — WeasyPrint, rendering an HTML/CSS digest template to PDF, generated on-demand when the user requests it. (Alternative considered: `reportlab`, for more manual layout control at the cost of more code — not needed here.)
+**PDF Exporter** — planned; `app/export/pdf.py` is an empty placeholder.
 
 ---
 
@@ -168,7 +170,7 @@ Conceptual schema — fields and relationships, not raw SQL.
 | `tags` | JSON array |
 | `event_date` | when the event happened |
 | `ingested_at` | when RAVN captured it |
-| `is_baseline` | Hide the first web/social snapshot when there is no previous snapshot to compare |
+| `is_baseline` | Hide first-run baseline records, including initial web/social snapshots, from the daily event feed |
 
 ### `daily_source_checkpoints`
 | Field | Notes |
@@ -181,12 +183,12 @@ Conceptual schema — fields and relationships, not raw SQL.
 | Field | Notes |
 |---|---|
 | `target_id`, `collection_date`, `source_type` | Unique source summary for each target and date |
-| `status` | `success`, `failed`, or `skipped` |
+| `status` | Stored values: `success`, `failed`, `skipped`, and `baseline_only` for historical baseline records. If no row exists, the API returns `not_recorded` because collection status is unknown. |
 | `event_count` | Current-day events stored for this source |
 | `highlight` | Concise stored summary; records “no events” when the source returns none |
 | `error`, `collected_at` | Latest source error and collection time |
 
-### `weekly_category_counts` (lightweight, for trend comparison)
+### Planned: `weekly_category_counts` (not in the current database)
 | Field | Notes |
 |---|---|
 | `id` | PK |
@@ -195,9 +197,9 @@ Conceptual schema — fields and relationships, not raw SQL.
 | `tag` | |
 | `count` | number of events with this tag, for this target, in this week |
 
-Purpose: lets the Weekly Signal Detector compare recent weeks' tag activity without re-scanning full historical raw event content each run — this is what powers the multi-week trend check, alongside the current week's spike check.
+Planned purpose: let the Weekly Signal Detector compare recent weeks' tag activity without re-scanning full historical raw event content.
 
-### `weekly_digests`
+### Planned: `weekly_digests` (not in the current database)
 | Field | Notes |
 |---|---|
 | `id` | PK |
@@ -211,17 +213,17 @@ Purpose: lets the Weekly Signal Detector compare recent weeks' tag activity with
 
 ## Architecture Overview
 
-RAVN operates as a fixed, deterministic pipeline with LLM calls at specific, bounded steps — not an autonomous multi-agent system throughout. The one deliberate exception is the **Weekly Narrator**, a genuine generator–verifier multi-agent loop (Analyst → Verifier → Writer → Critic, with feedback edges), used specifically where verifying a claim before it reaches the user matters most.
+The implemented pipeline uses bounded LLM calls for onboarding link classification and Day 0 Kundali synthesis. Daily collection is deterministic and does not call an LLM. The weekly detector and narrator remain planned.
 
 **Components:**
 1. **Auth Handler** — sign-up/login, session tokens, scopes all requests to the logged-in user.
 2. **Onboarding Handler** — resolves a company website URL into confirmed source URLs (GitHub, ATS, blog, web/social), with user review.
 3. **Kundali Builder** (background job) — builds the Day-0 historical baseline profile per target.
 4. **Daily Collector** (scheduled at 11:59 PM Asia/Kolkata, or manually triggered) — records current-date activity and stores one highlight per configured source for that date.
-5. **Event Store** (SQLite locally; PostgreSQL supported) — holds users, targets, Kundali profiles, daily events, and weekly category counts.
-6. **Weekly Signal Detector** (scheduled) — tags events and detects both single-week spikes and multi-week trends.
-7. **Weekly Narrator** (multi-agent) — verifies and writes the executive digest.
-8. **PDF Exporter** — generates a downloadable PDF of a digest, on request.
-9. **Dashboard/UI** — displays one-liners, drilldowns, Kundali profiles, and digests, scoped per user.
+5. **Event Store** (SQLite) — holds users, targets, Kundali profiles, daily events, checkpoints, and daily summaries. PostgreSQL support and weekly tables are planned.
+6. **Weekly Signal Detector** (planned) — tags events and detects single-week spikes and multi-week trends.
+7. **Weekly Narrator** (planned) — verifies and writes the executive digest.
+8. **PDF Exporter** (planned) — generates a downloadable PDF of a digest, on request.
+9. **Dashboard/UI** (planned) — will display one-liners, drilldowns, Kundali profiles, and digests, scoped per user.
 
-**Guardrails:** public data only, graceful degradation when a source is unavailable, no manual noise-tuning UI — all events are logged, prioritization happens inside the Weekly Signal Detector and Narrator, not through user curation.
+**Guardrails:** public data only, graceful degradation when a source is unavailable, no manual noise-tuning UI. Daily collection records events without LLM ranking; weekly prioritization is planned.

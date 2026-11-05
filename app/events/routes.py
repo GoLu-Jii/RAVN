@@ -136,9 +136,9 @@ def get_daily_summaries(
         "sources": [
             {
                 "source_type": source_type,
-                "status": summaries_by_source[source_type].status if source_type in summaries_by_source else "not_collected",
+                "status": summaries_by_source[source_type].status if source_type in summaries_by_source else "not_recorded",
                 "event_count": summaries_by_source[source_type].event_count if source_type in summaries_by_source else 0,
-                "highlight": summaries_by_source[source_type].highlight if source_type in summaries_by_source else "No collection has run for this date.",
+                "highlight": summaries_by_source[source_type].highlight if source_type in summaries_by_source else "No summary was recorded for this source and date; collection status is unknown.",
                 "error": summaries_by_source[source_type].error if source_type in summaries_by_source else None,
                 "collected_at": summaries_by_source[source_type].collected_at if source_type in summaries_by_source else None,
             }

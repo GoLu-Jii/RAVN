@@ -2,6 +2,8 @@
 
 **Tagline:** watch-it
 
+This document describes the intended product scope, not a checklist of completed code. See `PROGRESS.md` and `IMPLEMENTATION_GUIDE.md` for implementation status; the weekly pipeline, dashboard, PDF export, and full target deletion remain planned.
+
 ---
 
 ## 1. Core Philosophy
