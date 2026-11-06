@@ -308,6 +308,9 @@ def collect_target_events(db: Session, target: Target, collection_date: date | N
                             event_date = observed_at
                         else:
                             event_date = _as_utc(source_event_date)
+                            if event_date.astimezone(COLLECTION_TIMEZONE).date() != collection_date:
+                                ignored_out_of_day += 1
+                                continue
                     elif source_event_date is None:
                         undated_items += 1
                         if is_past_date:

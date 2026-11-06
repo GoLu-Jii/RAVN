@@ -450,6 +450,34 @@ class DailyCollectorTests(unittest.TestCase):
             target_id=self.target.id, source_type="ats",
         ).one().undated_items_baselined_at)
 
+    def test_dated_ats_and_blog_items_outside_collection_day_are_ignored(self):
+        self.target.github_url = None
+        self.target.ats_url = "https://careers.example.com/jobs"
+        self.target.blog_url = "https://example.com/blog"
+        self.session.commit()
+        collection_date = date(2026, 11, 6)
+        with (
+            patch.object(collectors, "get_ats_postings", return_value=[{
+                "title": "Older role",
+                "url": "https://careers.example.com/jobs/older",
+                "posted_at": "2026-11-05T08:00:00Z",
+            }]),
+            patch.object(collectors, "get_blog_posts", return_value=[{
+                "title": "Older post",
+                "link": "https://example.com/blog/older",
+                "published": "2026-11-05T08:00:00Z",
+            }]),
+        ):
+            result = collectors.collect_target_events(
+                self.session, self.target, collection_date
+            )
+
+        self.assertEqual(result["sources"]["ats"]["event_count"], 0)
+        self.assertEqual(result["sources"]["ats"]["ignored_out_of_day"], 1)
+        self.assertEqual(result["sources"]["blog"]["event_count"], 0)
+        self.assertEqual(result["sources"]["blog"]["ignored_out_of_day"], 1)
+        self.assertEqual(self.session.query(Event).count(), 0)
+
     def test_no_date_argument_keeps_current_date_undated_baseline_behavior(self):
         self.target.ats_url = "https://careers.example.com/jobs"
         self.session.commit()
