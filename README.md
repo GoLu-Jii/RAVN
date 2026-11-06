@@ -16,7 +16,7 @@ UNDER CONSTRUCTION
 | **LLM Strategic Dossier** | Completed | Kundali synthesis requests `openai/gpt-oss-120b`, routed to Groq first with Gemini and OpenRouter fallbacks; produces executive summary, strategic themes, cross-signal correlations, and predictive outlook. |
 | **Database Persistence** | Completed | SQLite (`ravn.db`) via SQLAlchemy and Alembic. Stores users, targets, Kundali profiles, daily events, source checkpoints, and per-date source summaries. |
 | **REST API** | Completed | FastAPI endpoints for onboarding and Kundali, plus daily collection, dated source highlights, event feed/detail, and saved summary dates (`/targets/{id}/daily/collect`, `/targets/{id}/daily/summaries`, `/targets/{id}/daily/summaries/dates`, `/targets/{id}/daily/events`). |
-| **Daily Collector** | Completed | Collects source-dated items for a requested Asia/Kolkata date, uses first-observed dates for new undated current-day ATS/blog listings, and catches up recent dates missing summaries at startup; scheduled at 11:59 PM IST. |
+| **Daily Collector** | Completed | Collects source-dated items for a requested Asia/Kolkata date, uses first-observed dates for new undated current-day ATS/blog listings, and checks recent missing or fully failed dates in background catch-up after startup; scheduled at 11:59 PM IST. |
 | **Weekly Signal Detector, Narrator & PDF Export** | Planned | Weekly analysis, digest generation, and PDF export remain future phases; weekly tables and jobs are not implemented. |
 
 ---

@@ -292,10 +292,12 @@ Lists only what has been written and tested so far. No plans, no roadmap.
   offset filters; baseline and raw content excluded), `GET /targets/{id}/daily/summaries` (four
   per-source highlights for a date), `GET /targets/{id}/daily/summaries/dates`, and
   `GET /targets/{id}/daily/events/{event_id}` (full detail).
-- `app/scheduler/jobs.py` and `app/main.py` - before starting the daily APScheduler job at
-  11:59 PM Asia/Kolkata, catch up the latest three completed dates without a summary row per ready
-  target (configurable with `RAVN_DAILY_CATCHUP_DAYS`). Past-date collection cannot rebuild
-  web/social snapshots or undated first-observed items. Scheduler deployment remains in-process.
+- `app/scheduler/jobs.py` and `app/main.py` - after starting the daily APScheduler job at
+  11:59 PM Asia/Kolkata, start catch-up in a background thread for the latest three completed dates
+  without a summary row or with all four sources failed per ready target (configurable with
+  `RAVN_DAILY_CATCHUP_DAYS`). Catch-up and scheduled runs share a process-local lock. Past-date
+  collection cannot rebuild web/social snapshots or undated first-observed items. Scheduler
+  deployment remains in-process.
 - Alembic migrations `c4f3b2a1d9e0`, `d8e4c1f7a260`, `e91f2a7c4b60`, `f4c91a6d2e80`,
   `c73a9b8e21d4`, and `9a2f6d1c4b80` add events, checkpoints, per-date summaries, historical baseline
   summaries, initial undated snapshot tracking, event date basis, and the undated-item summary count.

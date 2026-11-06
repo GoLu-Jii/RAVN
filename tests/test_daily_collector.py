@@ -1,6 +1,9 @@
 import unittest
 from datetime import date, datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
+
+import httpx
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -284,6 +287,121 @@ class DailyCollectorTests(unittest.TestCase):
             [event.title for event in self.session.query(Event).filter_by(source_type="ats").all()],
             ["Confirmed undated role"],
         )
+
+    def test_known_ats_url_is_not_counted_as_undated(self):
+        self.target.github_url = None
+        self.target.ats_url = "https://careers.example.com/jobs"
+        self.session.commit()
+        today = datetime.now(collectors.COLLECTION_TIMEZONE).date()
+        known_url = "https://careers.example.com/jobs/known"
+        self.session.add(Event(
+            target_id=self.target.id,
+            source_type="ats",
+            source_key="known-key",
+            title="Previously stored role",
+            url=known_url,
+            raw_content="Existing event",
+            one_liner="Existing event",
+            collection_date=today,
+            event_date=datetime.now(timezone.utc),
+            tags=["hiring"],
+            is_baseline=True,
+            date_basis="first_observed",
+        ))
+        self.session.commit()
+        listing = SimpleNamespace(
+            status_code=200,
+            text=(
+                f'<a href="{known_url}">A previously stored engineering position</a>'
+                '<a href="/jobs/new">A newly discovered engineering position</a>'
+            ),
+        )
+        detail = SimpleNamespace(status_code=200, text="<html><body>No date published.</body></html>")
+        with patch("app.daily.fetchers.ats.httpx.get", side_effect=[listing, detail]) as get:
+            result = collectors.collect_target_events(self.session, self.target, today)
+
+        ats = result["sources"]["ats"]
+        self.assertEqual(ats["undated_items"], 1)
+        self.assertEqual(ats["not_checked_items"], 1)
+        self.assertEqual(get.call_count, 2)
+        self.assertEqual(self.session.query(Event).filter_by(source_type="ats").count(), 2)
+
+    def test_known_blog_url_is_not_counted_as_undated(self):
+        self.target.github_url = None
+        self.target.blog_url = "https://example.com/blog"
+        self.session.commit()
+        today = datetime.now(collectors.COLLECTION_TIMEZONE).date()
+        known_url = "https://example.com/blog/known-post"
+        self.session.add(Event(
+            target_id=self.target.id,
+            source_type="blog",
+            source_key="known-blog-key",
+            title="Previously stored post",
+            url=known_url,
+            raw_content="Existing event",
+            one_liner="Existing event",
+            collection_date=today,
+            event_date=datetime.now(timezone.utc),
+            tags=["engineering"],
+            is_baseline=True,
+            date_basis="first_observed",
+        ))
+        self.session.commit()
+        with patch.object(collectors, "get_blog_posts", return_value=[
+            {"title": "Previously stored post", "link": known_url, "published": None},
+            {"title": "A new undated article", "link": "https://example.com/blog/new", "published": None},
+        ]):
+            result = collectors.collect_target_events(self.session, self.target, today)
+
+        blog = result["sources"]["blog"]
+        self.assertEqual(blog["undated_items"], 1)
+        self.assertEqual(blog["not_checked_items"], 1)
+        self.assertEqual(self.session.query(Event).filter_by(source_type="blog").count(), 2)
+
+    def test_failed_job_detail_fetch_does_not_create_event(self):
+        self.target.github_url = None
+        self.target.ats_url = "https://careers.example.com/jobs"
+        self.session.commit()
+        today = datetime.now(collectors.COLLECTION_TIMEZONE).date()
+        listing = SimpleNamespace(
+            status_code=200,
+            text='<a href="/jobs/new">A newly discovered engineering position</a>',
+        )
+        with patch(
+            "app.daily.fetchers.ats.httpx.get",
+            side_effect=[listing, httpx.ConnectError("detail page unavailable")],
+        ):
+            result = collectors.collect_target_events(self.session, self.target, today)
+
+        ats = result["sources"]["ats"]
+        self.assertEqual(ats["undated_items"], 0)
+        self.assertEqual(ats["not_checked_items"], 1)
+        self.assertEqual(self.session.query(Event).filter_by(source_type="ats").count(), 0)
+
+    def test_overflow_jobs_are_not_stored_or_counted_undated(self):
+        self.target.github_url = None
+        self.target.ats_url = "https://careers.example.com/jobs"
+        self.session.commit()
+        today = datetime.now(collectors.COLLECTION_TIMEZONE).date()
+        listing_html = "".join(
+            f'<a href="/jobs/role-{i}">A newly discovered engineering position number {i}</a>'
+            for i in range(21)
+        )
+        listing = SimpleNamespace(status_code=200, text=listing_html)
+        detail = SimpleNamespace(status_code=200, text="<html><body>No date published.</body></html>")
+        with patch(
+            "app.daily.fetchers.ats.httpx.get",
+            side_effect=[listing] + [detail] * 20,
+        ) as get:
+            result = collectors.collect_target_events(self.session, self.target, today)
+
+        ats = result["sources"]["ats"]
+        self.assertEqual(get.call_count, 21)
+        self.assertEqual(ats["undated_items"], 20)
+        self.assertEqual(ats["not_checked_items"], 1)
+        self.assertEqual(self.session.query(Event).filter_by(source_type="ats").count(), 20)
+        overflow_url = "https://careers.example.com/jobs/role-20"
+        self.assertIsNone(self.session.query(Event).filter_by(url=overflow_url).first())
 
     def test_past_date_keeps_source_dated_events_skips_snapshots_and_undated(self):
         self.target.ats_url = "https://careers.example.com/jobs"
