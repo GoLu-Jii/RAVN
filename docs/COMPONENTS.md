@@ -34,17 +34,20 @@
 
 ## 4. Daily Collector (Implemented; automated tests added)
 
-Automated tests cover Asia/Kolkata date boundaries, repeat-run deduplication, and baseline handling.
+Automated `unittest` coverage includes date parsing, source-date boundaries, repeat-run deduplication,
+baseline behavior, past-date collection, per-source date parsing, and startup catch-up.
 
 - **Trigger:** Scheduled for 11:59 PM Asia/Kolkata once per day for ready targets, or manually via `POST /targets/{id}/daily/collect`; each source is handled independently.
-- **Input:** Target's confirmed source URLs and the current Asia/Kolkata calendar date (12:00 AM through 11:59 PM). Repeated manual runs use the same date and deduplicate stored events.
-- **Output:** Current-date raw events (commits, dated job posts, dated blog posts, web/social changes) plus deterministic one-line event summaries; no LLM synthesis is run in this stage.
-- **Feeds:** Dated events must fall on the current Asia/Kolkata calendar date. Undated ATS/blog listings are baselined on the first successful snapshot; newly appearing listings on later runs are stored with their first-observed time. Full-detail events and one-liners go to the Event Store; one status, count, and highlight is saved for each source type per target/date. First-run web snapshots are also treated as baseline.
+- **Input:** Target's confirmed source URLs and an Asia/Kolkata calendar date (12:00 AM through 11:59 PM). Repeated manual runs use the same date and deduplicate stored events.
+- **Output:** Source-dated commits, job posts, and blog posts; current-day web/social changes; and current-day undated ATS/blog items with first-observed dates. Events carry `date_basis` (`source` or `first_observed`); no LLM synthesis is run in this stage.
+- **Feeds:** Dated events must fall on the requested Asia/Kolkata calendar date. The first successful current-day ATS/blog snapshot baselines undated listings; newly appearing undated listings on later runs are stored with their first-observed time. Past-date collection skips undated items and web/social with an explanatory status because those cannot be reconstructed. The daily summary stores per-source status, event count, undated-item count, and highlight. First-run web snapshots are also baseline.
+- **Dates:** The shared `_parse_date` helper handles datetimes, date-only values, ISO strings (including `Z`), RFC-style strings, epoch seconds/milliseconds, and feedparser `struct_time`. Aware timestamps are assigned to the Asia/Kolkata calendar date; naive datetimes are treated as UTC; date-only values keep their date.
+- **ATS/blog dates:** Greenhouse `updated_at` is only a candidate pre-filter; the individual job API's `first_published` determines the source date. The HTML ATS fallback reads JSON-LD `JobPosting.datePosted` from unseen job pages, capped at 20 detail lookups per source collection. Blog feeds fall back through `published`, `published_parsed`, `updated`, and `updated_parsed`; HTML article dates come from listing `<time>` metadata or trafilatura article metadata.
 - **Highlights:** Each source/date highlight joins up to the three newest event one-liners and reports any remaining event count. It is formatting, not LLM-generated analysis.
 - **History:** `GET /targets/{id}/daily/summaries` reads the four highlights for a date; `/daily/summaries/dates` lists dates with stored summary records. Historical baseline-only dates have `baseline_only` status; missing historical summaries report `not_recorded` because collection status cannot be inferred.
-- **Current source-date limitation:** The configured ready targets currently resolve to one unique ATS and blog URL (Stripe); a live sample on 2026-11-05 returned 5 undated ATS listings and 15 undated blog entries. The first successful collection after migration treats existing undated listings as baseline; later newly appearing listings are stored by first-observed date. That date does not claim when the employer published the item. This sample should not be generalized to other companies.
+- **Current source-date limitation:** The configured ready targets currently resolve to one unique ATS and blog URL (Stripe). A live 2026-11-06 check found source dates for all 6 ATS fallback listings and all 5 blog entries returned in the sample; the previous 2026-11-05 run saw 5/5 ATS and 15/15 blog items without parsed dates before detail-page date extraction. Current-day first-observed dates mean when RAVN noticed an item, not when the employer published it. Past-date runs do not assign current observation times to historical days. These samples should not be generalized to other companies.
 - **Tagging boundary:** Events currently receive fixed source/type labels only. Semantic product/topic tagging for the planned weekly spike/trend detector is not implemented. Recommended before detector work: add a separate deterministic tagging step at ingestion with a versioned taxonomy; this is a recommendation, not current behavior.
-- **Recovery boundary:** Checkpoints record last success and the latest web/social hash, but do not drive missed-date backfills. A delayed scheduled invocation still collects the date current at invocation time.
+- **Recovery boundary:** At startup, the app checks each ready target for the latest three completed dates with no daily summary row and collects those gaps before starting the 23:59 scheduler. Configure the count with `RAVN_DAILY_CATCHUP_DAYS` (default `3`). This is idempotent through daily summaries and event deduplication. Past-date catch-up can recover source-dated GitHub, ATS, and blog items; it skips web/social snapshots and undated first-observed items. It cannot recover source items that have since been removed, and multi-process scheduler ownership has not been configured.
 
 ---
 
@@ -60,6 +63,8 @@ Automated tests cover Asia/Kolkata date boundaries, repeat-run deduplication, an
 ---
 
 ## 6. Weekly Signal Detector (Planned)
+
+The planned week runs Monday through Sunday, grouped by each event's `collection_date` in Asia/Kolkata. The weekly job is planned for 03:00 Asia/Kolkata each Monday, after the preceding week has closed. Embedding-based retrieval/vector storage and the LangGraph agent stage are also planned; none is implemented yet.
 
 - **Trigger:** Scheduled, once per week per target, always runs regardless of activity level
 - **Input (planned):** That week's events after semantic tagging is defined and implemented, plus the last 4–6 weeks' stored category counts for trend comparison. Current fixed source/type labels do not supply this taxonomy.

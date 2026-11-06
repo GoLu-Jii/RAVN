@@ -2,7 +2,6 @@ import hashlib
 import json
 import logging
 from datetime import date, datetime, time, timezone
-from email.utils import parsedate_to_datetime
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -13,6 +12,7 @@ from app.daily.fetchers.ats import get_ats_postings
 from app.daily.fetchers.blogs import get_blog_posts
 from app.daily.fetchers.github import get_new_commits
 from app.daily.fetchers.socials import get_web_social_content
+from app.daily.dates import _as_utc, _parse_date
 from app.events.models import DailySourceCheckpoint, DailySourceSummary, Event
 from app.targets.models import Target
 
@@ -25,26 +25,6 @@ SOURCE_FIELDS = {
     "web_social": "web_social_url",
 }
 COLLECTION_TIMEZONE = ZoneInfo("Asia/Kolkata")
-
-
-def _as_utc(value: datetime) -> datetime:
-    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
-
-
-def _parse_date(value) -> datetime | None:
-    if not value:
-        return None
-    try:
-        if isinstance(value, (int, float)):
-            timestamp = value / 1000 if value > 10_000_000_000 else value
-            return datetime.fromtimestamp(timestamp, timezone.utc)
-        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-        return _as_utc(parsed)
-    except (TypeError, ValueError, OverflowError):
-        try:
-            return _as_utc(parsedate_to_datetime(str(value)))
-        except (TypeError, ValueError, OverflowError):
-            return None
 
 
 def _fetch_full_text(url: str | None, fallback: str = "") -> str:
@@ -66,7 +46,10 @@ def _fetch_full_text(url: str | None, fallback: str = "") -> str:
     return fallback
 
 
-def _candidate_events(db: Session, target: Target, source_type: str, since: datetime) -> list[dict]:
+def _candidate_events(
+    db: Session, target: Target, source_type: str, since: datetime,
+    collection_date: date | None = None,
+) -> list[dict]:
     if source_type == "github":
         return [
             {
@@ -84,11 +67,26 @@ def _candidate_events(db: Session, target: Target, source_type: str, since: date
 
     if source_type == "ats":
         events = []
-        for item in get_ats_postings(target.ats_url, strict=True):
+        known_urls = {
+            row[0] for row in db.query(Event.url).filter(
+                Event.target_id == target.id,
+                Event.source_type == "ats",
+                Event.url.is_not(None),
+            ).all()
+        }
+        for item in get_ats_postings(
+            target.ats_url, strict=True, known_urls=known_urls,
+            collection_date=collection_date,
+        ):
             url = item.get("url")
             key = url or f"{item.get('title', '')}:{item.get('location', '')}"
             source_key = hashlib.sha256(key.encode("utf-8")).hexdigest()
-            if _event_exists(db, target.id, source_type, source_key):
+            date_state = item.get("date_state")
+            if url in known_urls:
+                date_state = "not_checked"
+            elif date_state is None:
+                date_state = "dated" if _parse_date(item.get("posted_at")) else "undated"
+            if not url and _event_exists(db, target.id, source_type, source_key):
                 continue
             raw = "\n".join(filter(None, [
                 f"Title: {item.get('title')}",
@@ -100,6 +98,7 @@ def _candidate_events(db: Session, target: Target, source_type: str, since: date
                 "title": item.get("title") or "New job posting",
                 "url": url,
                 "event_date": _parse_date(item.get("posted_at")),
+                "date_state": date_state,
                 "raw_content": raw,
                 "one_liner": f"New role posted: {item.get('title') or 'Untitled role'}"
                 + (f" ({item['location']})" if item.get("location") else ""),
@@ -109,19 +108,35 @@ def _candidate_events(db: Session, target: Target, source_type: str, since: date
 
     if source_type == "blog":
         events = []
-        for item in get_blog_posts(target.blog_url, include_content=False, strict=True):
+        known_urls = {
+            row[0] for row in db.query(Event.url).filter(
+                Event.target_id == target.id,
+                Event.source_type == "blog",
+                Event.url.is_not(None),
+            ).all()
+        }
+        for item in get_blog_posts(
+            target.blog_url, include_content=False, strict=True,
+            include_metadata=True, known_urls=known_urls,
+        ):
             url = item.get("link")
             if not url:
                 continue
             source_key = hashlib.sha256(url.encode("utf-8")).hexdigest()
-            if _event_exists(db, target.id, source_type, source_key):
+            date_state = item.get("date_state")
+            if url in known_urls:
+                date_state = "not_checked"
+            elif date_state is None:
+                date_state = "dated" if _parse_date(item.get("published")) else "undated"
+            if url not in known_urls and _event_exists(db, target.id, source_type, source_key):
                 continue
             events.append({
                 "source_key": source_key,
                 "title": item.get("title") or "New blog post",
                 "url": url,
                 "event_date": _parse_date(item.get("published")),
-                "raw_content": item.get("title") or "",
+                "date_state": date_state,
+                "raw_content": item.get("content") or item.get("title") or "",
                 "one_liner": f"New post: {item.get('title') or url}",
                 "tags": ["engineering", "blog"],
             })
@@ -163,6 +178,8 @@ def _save_daily_summary(
     source_type: str,
     status: str,
     error: str | None = None,
+    undated_items: int = 0,
+    highlight_override: str | None = None,
 ) -> DailySourceSummary:
     summary = db.query(DailySourceSummary).filter_by(
         target_id=target_id,
@@ -184,6 +201,7 @@ def _save_daily_summary(
     summary.status = status
     summary.error = error
     summary.collected_at = datetime.now(timezone.utc)
+    summary.undated_items = undated_items
     if status == "failed":
         if not summary.highlight:
             summary.highlight = "Collection failed for this source."
@@ -200,7 +218,9 @@ def _save_daily_summary(
             .all()
         )
         summary.event_count = len(events)
-        if status == "skipped":
+        if highlight_override:
+            summary.highlight = highlight_override
+        elif status == "skipped":
             summary.highlight = "Source is not configured for this target."
         elif events:
             highlights = [event.one_liner for event in events[:3]]
@@ -216,6 +236,7 @@ def _save_daily_summary(
 def collect_target_events(db: Session, target: Target, collection_date: date | None = None) -> dict:
     """Collect only this Asia/Kolkata calendar date and update its four source summaries."""
     collection_date = collection_date or datetime.now(COLLECTION_TIMEZONE).date()
+    is_past_date = collection_date < datetime.now(COLLECTION_TIMEZONE).date()
     since = _day_start_utc(collection_date)
     result = {"target_id": target.id, "collection_date": collection_date, "sources": {}}
     for source_type, field in SOURCE_FIELDS.items():
@@ -225,7 +246,21 @@ def collect_target_events(db: Session, target: Target, collection_date: date | N
             db.commit()
             result["sources"][source_type] = {
                 "status": "skipped", "new_events": 0, "event_count": summary.event_count,
-                "highlight": summary.highlight,
+                "highlight": summary.highlight, "undated_items": 0, "not_checked_items": 0,
+            }
+            continue
+
+        if is_past_date and source_type == "web_social":
+            message = "Skipped: web/social snapshots cannot be reconstructed for a past date."
+            summary = _save_daily_summary(
+                db, target.id, collection_date, source_type, "skipped",
+                highlight_override=message,
+            )
+            db.commit()
+            result["sources"][source_type] = {
+                "status": "skipped", "new_events": 0,
+                "event_count": summary.event_count, "highlight": summary.highlight,
+                "undated_items": 0, "not_checked_items": 0,
             }
             continue
 
@@ -242,9 +277,10 @@ def collect_target_events(db: Session, target: Target, collection_date: date | N
         inserted = 0
         baseline_inserted = 0
         undated_items = 0
+        not_checked_items = 0
         ignored_out_of_day = 0
         try:
-            candidates = _candidate_events(db, target, source_type, since)
+            candidates = _candidate_events(db, target, source_type, since, collection_date)
             for item in candidates:
                 source_event_date = item["event_date"]
                 observed_at = datetime.now(timezone.utc)
@@ -258,8 +294,24 @@ def collect_target_events(db: Session, target: Target, collection_date: date | N
                     ).hexdigest()
                     event_date = observed_at
                 else:
-                    if source_event_date is None:
+                    date_state = item.get("date_state")
+                    if source_type in {"ats", "blog"}:
+                        if date_state is None:
+                            date_state = "dated" if source_event_date else "undated"
+                        if date_state == "not_checked" or (date_state == "dated" and source_event_date is None):
+                            not_checked_items += 1
+                            continue
+                        if date_state == "undated":
+                            undated_items += 1
+                            if is_past_date:
+                                continue
+                            event_date = observed_at
+                        else:
+                            event_date = _as_utc(source_event_date)
+                    elif source_event_date is None:
                         undated_items += 1
+                        if is_past_date:
+                            continue
                         event_date = observed_at
                     else:
                         event_date = _as_utc(source_event_date)
@@ -274,9 +326,10 @@ def collect_target_events(db: Session, target: Target, collection_date: date | N
                         if details:
                             item["raw_content"] += f"\nDescription: {details}"
                     elif source_event_date is not None and source_type == "blog":
-                        item["raw_content"] = _fetch_full_text(
-                            item["url"], item["raw_content"]
-                        ) or item["raw_content"]
+                        if not item.get("content"):
+                            item["raw_content"] = _fetch_full_text(
+                                item["url"], item["raw_content"]
+                            ) or item["raw_content"]
 
                 exists = db.query(Event.id).filter_by(
                     target_id=target.id,
@@ -304,6 +357,7 @@ def collect_target_events(db: Session, target: Target, collection_date: date | N
                     event_date=event_date,
                     tags=item["tags"],
                     is_baseline=is_baseline,
+                    date_basis=("first_observed" if source_event_date is None or source_type == "web_social" else "source"),
                 ))
                 inserted += 1
                 if is_baseline:
@@ -319,12 +373,19 @@ def collect_target_events(db: Session, target: Target, collection_date: date | N
                 db.add(checkpoint)
             else:
                 checkpoint.last_success_at = now
-            if source_type in {"ats", "blog"} and checkpoint.undated_items_baselined_at is None:
+            if (
+                not is_past_date
+                and source_type in {"ats", "blog"}
+                and checkpoint.undated_items_baselined_at is None
+            ):
                 checkpoint.undated_items_baselined_at = now
             if source_type == "web_social" and candidates:
                 checkpoint.last_content_hash = candidates[-1]["content_hash"]
             db.flush()
-            summary = _save_daily_summary(db, target.id, collection_date, source_type, "success")
+            summary = _save_daily_summary(
+                db, target.id, collection_date, source_type, "success",
+                undated_items=undated_items,
+            )
             db.commit()
             result["sources"][source_type] = {
                 "status": "success",
@@ -333,6 +394,7 @@ def collect_target_events(db: Session, target: Target, collection_date: date | N
                 "event_count": summary.event_count,
                 "highlight": summary.highlight,
                 "undated_items": undated_items,
+                "not_checked_items": not_checked_items,
                 "ignored_out_of_day": ignored_out_of_day,
             }
         except Exception as exc:
@@ -345,6 +407,8 @@ def collect_target_events(db: Session, target: Target, collection_date: date | N
                 "new_events": 0,
                 "event_count": summary.event_count,
                 "highlight": summary.highlight,
+                "undated_items": 0,
+                "not_checked_items": not_checked_items,
                 "error": str(exc),
             }
     return result

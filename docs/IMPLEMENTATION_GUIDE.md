@@ -24,7 +24,7 @@ ravn/
 │   │   └── synthesis.py        # orchestrates 4 data tracks, aggregates signals, DB upsert, LLM strategic intelligence dossier
 │   │
 │   ├── daily/
-│   │   ├── collectors.py       # current-date collection and per-source daily summaries
+│   │   ├── collectors.py       # date-specific collection and per-source daily summaries
 │   │   └── fetchers/
 │   │       ├── github.py       # daily GitHub commit fetcher
 │   │       ├── ats.py          # ATS API fetcher (Greenhouse/Lever/Ashby/Workable) + HTML career portal fallback
@@ -107,23 +107,33 @@ Automated competitive intelligence for tech & AI companies. RAVN watches a targe
 
 **Kundali Builder** — `httpx` for GitHub REST API calls (languages, commit cadence, active repos), `feedparser` for RSS/Atom feeds with `trafilatura` HTML article scraping fallback for non-RSS blogs, and ATS API probing with HTML career portal fallback for company-hosted job sites. Derives a multi-track strategic intelligence dossier via LLM synthesis.
 
-**Daily Collector** — collects events dated on the current Asia/Kolkata calendar date (00:00 through 23:59), then stores full event detail and one source highlight/status for each of GitHub, ATS, blog, and web/social. The scheduled run is at 23:59 Asia/Kolkata; manual runs use the same date window. Event one-liners and per-source highlights use deterministic formatting, not an LLM. Pull request and dependency-change events remain part of the broader project scope but are not collected by this implementation yet.
+**Daily Collector** — accepts a collection date, defaulting to today in Asia/Kolkata, and stores full event detail plus one source summary for GitHub, ATS, blog, and web/social. The scheduled run remains at 23:59 Asia/Kolkata; manual runs use the same date window. Event one-liners and highlights use deterministic formatting, not an LLM. Pull request and dependency-change events remain part of the broader project scope but are not collected by this implementation yet.
 
-ATS/blog items with a source date are stored only when that date falls on the collection date. For undated listings, RAVN stores the first successful listing snapshot as baseline records, then records newly appearing listings with the time RAVN first observed them. Those event dates mean “first observed by RAVN,” not the employer's publication date. Existing listings in the initial snapshot are excluded from the daily feed and highlights so they are not misreported as new activity.
+The shared `_parse_date` in `app/daily/dates.py` normalizes aware datetimes into UTC for storage and assigns calendar dates after conversion to Asia/Kolkata. Naive datetimes are treated as UTC; date-only values keep their date. It accepts ISO strings (including `Z`), RFC-style strings, epoch seconds/milliseconds, and feedparser `time.struct_time`; unparseable values return `None`.
 
-A live fetch on 2026-11-05 against the configured ready targets found four target records but only one unique ATS URL and one unique blog URL (all four records point to Stripe): 0/5 ATS listings and 0/15 blog entries had source dates. This is a point-in-time sample, not a representative measurement across companies. The HTML fallback for Stripe does not parse dates from job detail pages; undated listings are now handled through initial snapshot baselining and first-seen tracking instead.
+ATS/blog items with source dates are stored only when their Asia/Kolkata date matches the collection date. On a current-day run, undated ATS/blog listings are baselined on the first successful snapshot, then newly appearing listings are recorded with the time RAVN first observed them. Their `date_basis` is `first_observed`, not the employer's publication date. On past-date runs, undated listings are counted but not stored or used to initialize the current snapshot baseline. Past-date web/social collection is skipped because those snapshots cannot be reconstructed. Current-day first web/social snapshots are baseline records and hidden from the event feed.
 
-The Stripe URL `https://stripe.com/careers` is not recognized as one of the supported ATS API hosts, so `get_ats_postings()` uses the company-page HTML fallback. That fallback extracts listing links/titles and sets `posted_at` to `None`; it does not parse the linked job detail page for a publication date. For provider-specific adapters, the code maps Greenhouse `updated_at`, Lever `createdAt`, Ashby `publishedAt`, and Workable `published_on`/`created_at`. Greenhouse's [Job Board API docs](https://docs.greenhouse.io/job-board) show `updated_at` in list responses and `first_published` on individual job responses. Ashby's [public job posting API docs](https://developers.ashbyhq.com/docs/public-job-posting-api) specify `publishedAt`. A real Lever public board response was checked and contains `createdAt` as a Unix millisecond timestamp, which the collector's date parser supports. Lever's [public Postings API](https://github.com/lever/postings-api#api-methods) provides the public JSON postings endpoint.
+The daily source summary includes `undated_items`, the number of ATS/blog candidates without a usable source date encountered on that collection run. A live fetch on 2026-11-06 against the configured ready targets found four target records but only one unique ATS URL and one unique blog URL (all four records point to Stripe): all 6 returned ATS listings and all 5 returned blog entries had dates after the date-extraction changes. On 2026-11-05 the earlier implementation returned 0/5 and 0/15 dated items. These are point-in-time samples, not representative measurements across companies.
 
-The source checkpoint now records whether the initial undated ATS/blog listing snapshot has been baselined. Existing checkpoints are unmarked by the migration, so the first successful collection after upgrade baselines the listings it sees; later unseen listings are recorded as first-observed events. This avoids treating all currently open roles as newly posted immediately after deployment.
+The Stripe URL `https://stripe.com/careers` is not recognized as one of the supported ATS API hosts, so `get_ats_postings()` uses the company-page HTML fallback. It reads `datePosted` from JSON-LD `JobPosting` blocks on unseen detail pages (20 detail lookups maximum per collection, with request timeouts). Failed requests or missing JSON-LD dates remain undated; current-day listings use the existing baseline/first-observed handling, while past-date runs skip them. Existing event URLs are checked before detail-page requests.
+
+For provider-specific adapters, Lever's live public `leverdemo` response (10 postings) included `createdAt` as a Unix-millisecond field; the code maps it as the source date. The [Lever Postings API documentation](https://github.com/lever/postings-api#api-methods) documents the public JSON postings endpoint, while the live payload confirms the field exists. Greenhouse's [Job Board API docs](https://docs.greenhouse.io/job-board) document `updated_at` in list responses and `first_published` on individual job responses. The adapter uses `updated_at` only to pre-filter candidates for the requested date, then checks the individual job's `first_published`. A live Stripe Greenhouse response on 2026-11-06 confirmed both fields; a sampled listing had `first_published` 2026-09-09 and `updated_at` 2026-10-29, confirming that edits can make the update date misleading. Ashby's [public job posting API docs](https://developers.ashbyhq.com/docs/public-job-posting-api) specify `publishedAt`.
+
+Blog RSS entries use `published`, then `published_parsed`, `updated`, and `updated_parsed`. The HTML fallback uses a listing card's `<time datetime>` value; when absent, it checks trafilatura metadata on up to three unseen article pages. The same shared date parser handles these source values. Stripe sample cards and article metadata were spot-checked for matching published dates. A live GitHub Blog fetch also returned RSS publication timestamps for its selected posts.
+
+### Planned weekly processing (not implemented)
+
+The planned reporting week is Monday through Sunday, using Asia/Kolkata `collection_date` values. The weekly job is planned for 03:00 Asia/Kolkata each Monday. Embedding-based retrieval with a vector store and the LangGraph agent stage remain planned; there is no vector database or LangGraph pipeline in the current implementation.
+
+The source checkpoint records whether the initial undated ATS/blog listing snapshot has been baselined. Existing checkpoints are unmarked by migration, so the first successful current-day collection baselines listings it sees; a historical catch-up run does not set this marker. Later unseen current-day listings are recorded as first-observed events.
 
 The collector adds fixed source/type labels (`github`, `commit`; `hiring`, `job_posting`; `engineering`, `blog`; `web_update`). These are not the product/topic taxonomy needed for cross-source spike and trend analysis. The weekly detector and semantic tagging are not implemented. Recommended design to settle before detector work: a separate deterministic tagging step that assigns a versioned taxonomy at ingestion, so detector logic can focus on counts and correlation and existing events can be backfilled. This is a design recommendation, not implemented behavior.
 
 **Event Store** — SQLite (`ravn.db`) + SQLAlchemy, using `JSON` columns for tags and Kundali signals. PostgreSQL deployment is not implemented or validated yet.
 
-**Collection recovery and hosting caveats** — the checkpoint stores each source's last successful time and web/social content hash; the collector does not use checkpoints to backfill missed dates. APScheduler runs inside the API process with its in-memory job store. Its 12-hour misfire grace can run a delayed callback while that process remains alive, but the callback still selects the current Asia/Kolkata date; it does not recover the prior date, and a process restart loses the pending schedule. SQLite is the current local database; Railway/Render persistent-volume and single-scheduler-instance behavior have not been configured or validated. A production deployment needs durable database storage and a reliable, single-owner scheduler or external scheduled worker.
+**Collection recovery and hosting caveats** — before starting APScheduler, app startup searches backward from yesterday for up to three completed dates without any summary row per ready target, stopping at the target's creation date. Set `RAVN_DAILY_CATCHUP_DAYS` to change the default count. It runs the same collector with the historical date: dated GitHub, ATS, and blog events can be recovered, while web/social and undated first-observed items are skipped. Existing source data may no longer expose deleted or edited items, so catch-up cannot guarantee a complete historical reconstruction. The in-process APScheduler remains at 23:59 Asia/Kolkata with its in-memory job store; catch-up happens before it starts. SQLite is the current local database; Railway/Render persistent-volume and multi-instance scheduler behavior have not been configured or validated.
 
-**Testing status** — existing integration scripts remain manual print-and-inspect checks. `tests/test_daily_collector.py` adds automated coverage for Asia/Kolkata date boundaries, repeat-run deduplication, web baseline handling, undated ATS/blog snapshot baselining and new listings, and Lever `createdAt` parsing.
+**Testing status** — existing integration scripts remain manual print-and-inspect checks. Offline `unittest` suites cover source date parsing, blog date fallbacks, ATS JSON-LD and Greenhouse date handling, daily collector boundaries/deduplication/baselines/past dates/API output, and startup catch-up. Run them with `python -m unittest tests.test_daily_dates tests.test_blog_dates tests.test_ats_dates tests.test_daily_collector tests.test_scheduler_catchup -v`.
 
 **Weekly Signal Detector** — planned; the current `weekly/detector.py` is an empty placeholder.
 
@@ -182,7 +192,8 @@ Conceptual schema — fields and relationships, not raw SQL.
 | `one_liner` | TEXT — dashboard summary |
 | `collection_date` | Asia/Kolkata calendar date assigned to this daily collection |
 | `tags` | JSON array of fixed source/type labels today; semantic product/topic tags are not implemented |
-| `event_date` | Source event time when available; otherwise first-observed time for undated ATS/blog listings |
+| `event_date` | Source event time when available; otherwise the observation time for first-observed events |
+| `date_basis` | `source` or `first_observed`; nullable only for any historical event that cannot be safely classified |
 | `ingested_at` | when RAVN captured it |
 | `is_baseline` | Hide initial web/social snapshots and initial undated ATS/blog listings from the daily event feed |
 
@@ -200,6 +211,7 @@ Conceptual schema — fields and relationships, not raw SQL.
 | `target_id`, `collection_date`, `source_type` | Unique source summary for each target and date |
 | `status` | Stored values: `success`, `failed`, `skipped`, and `baseline_only` for historical baseline records. If no row exists, the API returns `not_recorded` because collection status is unknown. |
 | `event_count` | Current-day events stored for this source |
+| `undated_items` | Number of ATS/blog candidates without a usable source date on that collection run; defaults to 0. Historical counts cannot be reconstructed, so existing rows receive 0 during migration. |
 | `highlight` | Concise stored summary; records “no events” when the source returns none |
 | `error`, `collected_at` | Latest source error and collection time |
 
@@ -234,7 +246,7 @@ The implemented pipeline uses bounded LLM calls for onboarding link classificati
 1. **Auth Handler** — sign-up/login, session tokens, scopes all requests to the logged-in user.
 2. **Onboarding Handler** — resolves a company website URL into confirmed source URLs (GitHub, ATS, blog, web/social), with user review.
 3. **Kundali Builder** (background job) — builds the Day-0 historical baseline profile per target.
-4. **Daily Collector** (scheduled at 11:59 PM Asia/Kolkata, or manually triggered) — records current-date activity and stores one highlight per configured source for that date.
+4. **Daily Collector** (scheduled at 11:59 PM Asia/Kolkata, or manually triggered) — records activity for the selected date and stores one summary per configured source for that date.
 5. **Event Store** (SQLite) — holds users, targets, Kundali profiles, daily events, checkpoints, and daily summaries. PostgreSQL support and weekly tables are planned.
 6. **Weekly Signal Detector** (planned) — consumes events after a semantic tagging step has been designed and implemented, then detects single-week spikes and multi-week trends. Current source/type labels are insufficient; tagging ownership and taxonomy remain open design decisions.
 7. **Weekly Narrator** (planned) — verifies and writes the executive digest.

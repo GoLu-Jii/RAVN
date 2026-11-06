@@ -1,6 +1,6 @@
 # RAVN — Build Progress Tracker
 
-Last updated: 2026-11-05
+Last updated: 2026-11-06
 
 Lists only what has been written and tested so far. No plans, no roadmap.
 
@@ -274,37 +274,41 @@ Lists only what has been written and tested so far. No plans, no roadmap.
 
 ## Daily collection and event feed
 - `app/events/models.py` — `Event` stores source identity, title, URL, full content, one-liner,
-  event/ingestion timestamps, tags, and a baseline flag. A unique target/source/source-key constraint
+  event/ingestion timestamps, tags, a baseline flag, and `date_basis` (`source` or `first_observed`). A unique target/source/source-key constraint
   prevents duplicate events. `DailySourceCheckpoint` tracks the last successful collection per source.
 - `app/daily/fetchers/github.py` — pages through the target's public repositories in stable
-  name order, then fetches commits from recently pushed repositories for the current Asia/Kolkata
-  calendar date only. Pull requests and dependency changes are listed in
+  name order, then fetches commits from recently pushed repositories for the requested Asia/Kolkata
+  calendar date (current day or historical catch-up). Pull requests and dependency changes are listed in
   the broader project scope but are not part of the implemented daily event types yet.
-- `app/daily/collectors.py` — runs GitHub, ATS, blog, and web/social collection independently;
-  restricts dated events to the current Asia/Kolkata calendar date; stores full events and updates a
-  per-target/date/source summary with status, count, and a concise highlight. Undated ATS/blog items
-  are baselined on the initial snapshot, then new listings are recorded with first-observed time;
-  first-run web snapshots are also baseline events. Stored tags are fixed source/type labels;
-  semantic product/topic tagging for the planned weekly detector has not been implemented.
+- `app/daily/collectors.py` - accepts an explicit collection date (defaults to today in
+  Asia/Kolkata); collects dated GitHub/ATS/blog items for that date and current-day web/social
+  snapshots; stores full events and per-target/date/source summaries including `undated_items`.
+  First current-day ATS/blog snapshots are baselined, later undated listings are marked
+  `first_observed`, and past-date runs skip undated items and web/social snapshots. Stored tags are
+  fixed source/type labels; semantic product/topic tagging for the planned weekly detector has not
+  been implemented.
 - `app/events/routes.py` — provides authenticated, target-owner-scoped endpoints:
   `POST /targets/{id}/daily/collect`, `GET /targets/{id}/daily/events` (source, since, limit,
   offset filters; baseline and raw content excluded), `GET /targets/{id}/daily/summaries` (four
   per-source highlights for a date), `GET /targets/{id}/daily/summaries/dates`, and
   `GET /targets/{id}/daily/events/{event_id}` (full detail).
-- `app/scheduler/jobs.py` and `app/main.py` — start a daily APScheduler job at 11:59 PM
-  Asia/Kolkata, using the same current-date collector as the manual endpoint. The checkpoint table
-  does not provide missed-date recovery; the in-memory scheduler and current-date selection can leave
-  a gap after downtime or restart.
-- Alembic migrations `c4f3b2a1d9e0`, `d8e4c1f7a260`, `e91f2a7c4b60`, `f4c91a6d2e80`, and
-  `c73a9b8e21d4` add events, checkpoints, per-date summaries, historical baseline summaries, and the
-  marker used to baseline existing undated ATS/blog listings after upgrade.
+- `app/scheduler/jobs.py` and `app/main.py` - before starting the daily APScheduler job at
+  11:59 PM Asia/Kolkata, catch up the latest three completed dates without a summary row per ready
+  target (configurable with `RAVN_DAILY_CATCHUP_DAYS`). Past-date collection cannot rebuild
+  web/social snapshots or undated first-observed items. Scheduler deployment remains in-process.
+- Alembic migrations `c4f3b2a1d9e0`, `d8e4c1f7a260`, `e91f2a7c4b60`, `f4c91a6d2e80`,
+  `c73a9b8e21d4`, and `9a2f6d1c4b80` add events, checkpoints, per-date summaries, historical baseline
+  summaries, initial undated snapshot tracking, event date basis, and the undated-item summary count.
 
 ## Verification & Test Scripts
 - `tests/test.py` — GitHub parsing layer runner covering `extract_account_name`,
   `get_account_type`, `list_repos`, `get_commit_activity`, `get_recent_commits`, `get_languages`.
   Run via `python -m tests.test`.
 - `tests/retest.py` — End-to-end database verification script: queries the database for the latest target Kundali profile and prints all empirical signals (`tech_stack`, `cadence_baseline`, `recent_commits`, `ats_postings`, `web_social_status`, `blog_status`) along with the synthesized strategic intelligence themes. Run via `python -m tests.retest`.
-- `tests/test_daily_collector.py` — automated tests for Asia/Kolkata date boundaries, repeated-run deduplication, web baseline behavior, undated ATS/blog baseline and first-seen handling, and Lever `createdAt` timestamps. Run via `python -m unittest tests.test_daily_collector -v`.
+- Daily collector `unittest` suites cover Asia/Kolkata parsing and boundaries, blog dates, ATS JSON-LD
+  and Greenhouse dates, repeat-run deduplication, baselines, past-date behavior, API output, and
+  startup catch-up. Run with:
+  `python -m unittest tests.test_daily_dates tests.test_blog_dates tests.test_ats_dates tests.test_daily_collector tests.test_scheduler_catchup -v`.
 
 ---
 

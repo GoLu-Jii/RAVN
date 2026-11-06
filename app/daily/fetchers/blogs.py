@@ -4,10 +4,12 @@ import trafilatura
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 
+from app.daily.dates import _parse_date
 
 _HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
+MAX_METADATA_LOOKUPS = 3
 
 
 def discover_feed_url(blog_url: str, strict: bool = False) -> str | None:
@@ -62,6 +64,8 @@ def _extract_posts_from_html(
     max_posts: int = 15,
     include_content: bool = True,
     strict: bool = False,
+    include_metadata: bool = False,
+    known_urls: set[str] | None = None,
 ) -> list[dict]:
     """
     Fallback extractor when no RSS/Atom feed exists. Scrapes recent article cards
@@ -110,26 +114,61 @@ def _extract_posts_from_html(
             continue
 
         seen_urls.add(full_url)
+        article = a.find_parent("article")
+        date_tag = article.find("time") if article else None
+        published = date_tag.get("datetime") if date_tag else None
         posts.append({
             "title": text,
             "link": full_url,
-            "published": None,
+            # Prefer the source page's per-article timestamp. This lets the
+            # daily collector date HTML-fallback posts without fetching details.
+            "published": published,
+            "date_state": (
+                "dated" if published and _parse_date(published)
+                else "not_checked" if include_metadata or include_content
+                else "undated"
+            ),
             "content": None,
         })
 
         if len(posts) >= max_posts:
             break
 
-    # Extract snippet text for the top 3 posts using trafilatura
-    for post in (posts[:3] if include_content else []):
+    # Reuse article requests for content and/or dates, and skip URLs already stored.
+    known_urls = known_urls or set()
+    details_checked = 0
+    for post in (posts[:3] if include_content or include_metadata else []):
+        if post["link"] in known_urls:
+            post["date_state"] = "not_checked"
+            continue
+        if post.get("date_state") == "dated" and not include_content:
+            continue
+        if details_checked >= MAX_METADATA_LOOKUPS:
+            if post.get("date_state") != "dated":
+                post["date_state"] = "not_checked"
+            continue
+        details_checked += 1
         try:
             art_res = httpx.get(post["link"], headers=_HEADERS, timeout=8, follow_redirects=True)
-            if art_res.status_code == 200:
-                extracted = trafilatura.extract(art_res.text)
+            if art_res.status_code != 200:
+                if post.get("date_state") != "dated":
+                    post["date_state"] = "not_checked"
+            else:
+                metadata = trafilatura.extract_metadata(art_res.text)
+                if not post.get("published"):
+                    value = metadata.date if metadata else None
+                    post["published"] = value
+                    post["date_state"] = (
+                        "dated" if value and _parse_date(value)
+                        else "undated" if not value
+                        else "not_checked"
+                    )
+                extracted = trafilatura.extract(art_res.text) if include_content or include_metadata else None
                 if extracted:
                     post["content"] = extracted[:600]
         except Exception:
-            pass
+            if post.get("date_state") != "dated":
+                post["date_state"] = "not_checked"
 
     return posts
 
@@ -139,6 +178,8 @@ def get_blog_posts(
     max_posts: int = 15,
     include_content: bool = True,
     strict: bool = False,
+    include_metadata: bool = False,
+    known_urls: set[str] | None = None,
 ) -> list[dict]:
     """
     Primary blog post fetcher:
@@ -160,7 +201,19 @@ def get_blog_posts(
             for entry in entries:
                 title = entry.get("title")
                 link = entry.get("link")
-                published = entry.get("published")
+                published = (
+                    entry.get("published")
+                    or entry.get("published_parsed")
+                    or entry.get("updated")
+                    or entry.get("updated_parsed")
+                )
+                date_state = (
+                    "dated" if published and _parse_date(published)
+                    else "undated" if not published
+                    else "not_checked"
+                )
+                if link in (known_urls or set()):
+                    date_state = "not_checked"
 
                 content = None
                 if link and include_content:
@@ -177,6 +230,7 @@ def get_blog_posts(
                     "title": title,
                     "link": link,
                     "published": published,
+                    "date_state": date_state,
                     "content": content,
                 })
 
@@ -193,6 +247,8 @@ def get_blog_posts(
         max_posts=max_posts,
         include_content=include_content,
         strict=strict,
+        include_metadata=include_metadata,
+        known_urls=known_urls,
     )
     if strict and feed_error and not posts:
         raise feed_error

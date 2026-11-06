@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from app.auth.routes import router as auth_router
 from app.targets.routes import router as targets_router
 from app.events.routes import router as daily_router
-from app.scheduler.jobs import create_scheduler
+from app.scheduler.jobs import catch_up_missed_days, create_scheduler
 
 app = FastAPI(
     title="RAVN Competitive Intelligence API",
@@ -44,6 +44,7 @@ Interactive Swagger UI: http://localhost:8000/docs
 
 @app.on_event("startup")
 def start_daily_scheduler():
+    catch_up_missed_days()
     scheduler = create_scheduler()
     scheduler.start()
     app.state.daily_scheduler = scheduler

@@ -40,7 +40,7 @@ RAVN watches a standardized set of public sources for every target:
 3. **Engineering blogs** — technical posts and dev announcements
 4. **Social & web** — official product updates and launch pages
 
-**Implementation boundary:** pull requests and dependency/library changes remain intended product scope, but the current daily collector stores GitHub commits only. ATS/blog items must have a parseable publication date to enter daily storage; current-target sampling and its limitations are documented in `IMPLEMENTATION_GUIDE.md`.
+**Implementation boundary:** pull requests and dependency/library changes remain intended product scope, but the current daily collector stores GitHub commits only. ATS/blog items use a source publication date when available; undated items seen on current-day runs use a clearly marked first-observed date after the initial snapshot is baselined. Past-date runs exclude undated items. Current-target sampling and its limits are documented in `IMPLEMENTATION_GUIDE.md`.
 
 ### Guardrails
 - **Public data only.** RAVN never accesses anything beyond what is publicly visible. Platforms with no official public API and restrictive ToS (e.g. LinkedIn, Wellfound) are treated as best-effort web/social sources at most, never as dedicated integrations.

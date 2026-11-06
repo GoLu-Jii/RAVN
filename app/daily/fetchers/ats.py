@@ -12,7 +12,11 @@ def detect_ats_platform(ats_url: str) -> str | None:
 
 
 import httpx
+from zoneinfo import ZoneInfo
 
+from app.daily.dates import _parse_date
+
+MAX_DETAIL_LOOKUPS = 20
 
 def _extract_board_token(ats_url: str) -> str | None:
     """
@@ -25,7 +29,25 @@ def _extract_board_token(ats_url: str) -> str | None:
     return path[-1]
 
 
-def fetch_greenhouse_jobs(ats_url: str, strict: bool = False) -> list[dict]:
+def _greenhouse_job_date(token: str, job_id: int, strict: bool = False) -> tuple[str | None, str]:
+    api_url = f"https://boards-api.greenhouse.io/v1/boards/{token}/jobs/{job_id}"
+    try:
+        response = httpx.get(api_url, timeout=8)
+        response.raise_for_status()
+        value = response.json().get("first_published")
+        if value and _parse_date(value):
+            return value, "dated"
+        return (None, "undated") if not value else (None, "not_checked")
+    except (httpx.HTTPError, ValueError, AttributeError):
+        if strict:
+            raise
+        return None, "not_checked"
+
+
+def fetch_greenhouse_jobs(
+    ats_url: str, strict: bool = False, collection_date=None,
+    known_urls: set[str] | None = None,
+) -> list[dict]:
     token = _extract_board_token(ats_url)
     if not token:
         return []
@@ -48,15 +70,34 @@ def fetch_greenhouse_jobs(ats_url: str, strict: bool = False) -> list[dict]:
 
     jobs = response.json().get("jobs", [])
 
-    return [
-        {
+    output = []
+    details_checked = 0
+    for job in jobs:
+        updated_at = job.get("updated_at")
+        if collection_date:
+            updated_datetime = _parse_date(updated_at)
+            if not updated_datetime or updated_datetime.astimezone(ZoneInfo("Asia/Kolkata")).date() != collection_date:
+                continue
+        first_published = job.get("first_published") if not collection_date else None
+        date_state = "dated" if first_published and _parse_date(first_published) else "undated"
+        if collection_date and job.get("absolute_url") in (known_urls or set()):
+            date_state = "not_checked"
+        elif collection_date and details_checked < MAX_DETAIL_LOOKUPS:
+            job_id = job.get("id")
+            if job_id is not None:
+                details_checked += 1
+                first_published, date_state = _greenhouse_job_date(token, job_id, strict=False)
+        elif collection_date:
+            date_state = "not_checked"
+        output.append({
+            "id": job.get("id"),
             "title": job.get("title"),
             "location": (job.get("location") or {}).get("name"),
             "url": job.get("absolute_url"),
-            "posted_at": job.get("updated_at"),
-        }
-        for job in jobs
-    ]
+            "posted_at": first_published,
+            "date_state": date_state,
+        })
+    return output
 
 
 def fetch_lever_jobs(ats_url: str, strict: bool = False) -> list[dict]:
@@ -167,7 +208,60 @@ def fetch_workable_jobs(ats_url: str, strict: bool = False) -> list[dict]:
     ]
 
 
-def _extract_jobs_from_html(ats_url: str, max_jobs: int = 30, strict: bool = False) -> list[dict]:
+def _jsonld_date_posted(payload):
+    """Find datePosted on JobPosting objects, including lists and @graph blocks."""
+    if isinstance(payload, list):
+        for item in payload:
+            found = _jsonld_date_posted(item)
+            if found:
+                return found
+    elif isinstance(payload, dict):
+        types = payload.get("@type", [])
+        if isinstance(types, str):
+            types = [types]
+        if any(value == "JobPosting" or str(value).rstrip("/").endswith("/JobPosting") for value in types) and payload.get("datePosted"):
+            return payload["datePosted"]
+        for value in payload.values():
+            if isinstance(value, (list, dict)):
+                found = _jsonld_date_posted(value)
+                if found:
+                    return found
+    return None
+
+
+def _job_page_date_result(url: str) -> tuple[str | None, str]:
+    import json
+    from bs4 import BeautifulSoup
+
+    try:
+        response = httpx.get(url, headers={"User-Agent": "Mozilla/5.0 (compatible; RAVN/1.0)"}, timeout=8, follow_redirects=True)
+        if response.status_code != 200:
+            return None, "not_checked"
+        soup = BeautifulSoup(response.text, "html.parser")
+        invalid_date_found = False
+        for script in soup.find_all("script", type="application/ld+json"):
+            try:
+                payload = json.loads(script.string or script.get_text())
+                value = _jsonld_date_posted(payload)
+                if value and _parse_date(value):
+                    return value, "dated"
+                if value:
+                    invalid_date_found = True
+            except (json.JSONDecodeError, TypeError):
+                continue
+        return (None, "not_checked") if invalid_date_found else (None, "undated")
+    except httpx.RequestError:
+        return None, "not_checked"
+
+
+def _job_page_date(url: str) -> str | None:
+    return _job_page_date_result(url)[0]
+
+
+def _extract_jobs_from_html(
+    ats_url: str, max_jobs: int = 30, strict: bool = False,
+    known_urls: set[str] | None = None,
+) -> list[dict]:
     """
     Fallback extractor for company-hosted careers pages (e.g. stripe.com/careers).
     Probes the page and common subpaths for job listing links or embedded ATS boards.
@@ -185,6 +279,7 @@ def _extract_jobs_from_html(ats_url: str, max_jobs: int = 30, strict: bool = Fal
             urls_to_try.append(base_url + sub)
 
     jobs = []
+    known_urls = known_urls or set()
     seen = set()
     fetched_page = False
     last_error = None
@@ -225,12 +320,13 @@ def _extract_jobs_from_html(ats_url: str, max_jobs: int = 30, strict: bool = Fal
 
                 if text not in seen:
                     seen.add(text)
-                    jobs.append({
+                    job = {
                         "title": text,
                         "location": None,
                         "url": urljoin(url, href),
                         "posted_at": None,
-                    })
+                    }
+                    jobs.append(job)
 
                 if len(jobs) >= max_jobs:
                     break
@@ -243,12 +339,27 @@ def _extract_jobs_from_html(ats_url: str, max_jobs: int = 30, strict: bool = Fal
         if jobs:
             break
 
+    # Read dates only from unseen detail pages. Limit requests per collection.
+    details_checked = 0
+    for job in jobs:
+        if job["url"] in known_urls:
+            job["date_state"] = "not_checked"
+            continue
+        if details_checked >= MAX_DETAIL_LOOKUPS:
+            job["date_state"] = "not_checked"
+            continue
+        details_checked += 1
+        job["posted_at"], job["date_state"] = _job_page_date_result(job["url"])
+
     if strict and not fetched_page and last_error:
         raise last_error
     return jobs
 
 
-def get_ats_postings(ats_url: str, strict: bool = False) -> list[dict]:
+def get_ats_postings(
+    ats_url: str, strict: bool = False, known_urls: set[str] | None = None,
+    collection_date=None,
+) -> list[dict]:
     if not ats_url:
         return []
 
@@ -257,7 +368,10 @@ def get_ats_postings(ats_url: str, strict: bool = False) -> list[dict]:
     api_error = None
     try:
         if platform == "Greenhouse":
-            metadata = fetch_greenhouse_jobs(ats_url, strict=strict)
+            metadata = fetch_greenhouse_jobs(
+                ats_url, strict=strict, collection_date=collection_date,
+                known_urls=known_urls,
+            )
         elif platform == "lever":
             metadata = fetch_lever_jobs(ats_url, strict=strict)
         elif platform == "ashbyhq":
@@ -275,7 +389,7 @@ def get_ats_postings(ats_url: str, strict: bool = False) -> list[dict]:
     # If no standard ATS API matched or returned empty, try HTML careers fallback
     if not metadata:
         try:
-            metadata = _extract_jobs_from_html(ats_url, strict=strict)
+            metadata = _extract_jobs_from_html(ats_url, strict=strict, known_urls=known_urls)
         except Exception:
             if api_error:
                 raise api_error
@@ -283,5 +397,16 @@ def get_ats_postings(ats_url: str, strict: bool = False) -> list[dict]:
 
     if strict and api_error and not metadata:
         raise api_error
+
+    known_urls = known_urls or set()
+    for item in metadata:
+        if item.get("url") in known_urls:
+            item["date_state"] = "not_checked"
+        elif "date_state" not in item:
+            item["date_state"] = (
+                "dated" if item.get("posted_at") and _parse_date(item["posted_at"])
+                else "undated" if not item.get("posted_at")
+                else "not_checked"
+            )
 
     return metadata
