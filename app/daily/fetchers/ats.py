@@ -80,15 +80,20 @@ def fetch_greenhouse_jobs(
                 continue
         first_published = job.get("first_published") if not collection_date else None
         date_state = "dated" if first_published and _parse_date(first_published) else "undated"
+        date_check_reason = None
         if collection_date and job.get("absolute_url") in (known_urls or set()):
             date_state = "not_checked"
+            date_check_reason = "known"
         elif collection_date and details_checked < MAX_DETAIL_LOOKUPS:
             job_id = job.get("id")
             if job_id is not None:
                 details_checked += 1
                 first_published, date_state = _greenhouse_job_date(token, job_id, strict=False)
+                if date_state == "not_checked":
+                    date_check_reason = "failed"
         elif collection_date:
             date_state = "not_checked"
+            date_check_reason = "cap_skipped"
         output.append({
             "id": job.get("id"),
             "title": job.get("title"),
@@ -96,6 +101,7 @@ def fetch_greenhouse_jobs(
             "url": job.get("absolute_url"),
             "posted_at": first_published,
             "date_state": date_state,
+            "date_check_reason": date_check_reason,
         })
     return output
 
@@ -344,12 +350,16 @@ def _extract_jobs_from_html(
     for job in jobs:
         if job["url"] in known_urls:
             job["date_state"] = "not_checked"
+            job["date_check_reason"] = "known"
             continue
         if details_checked >= MAX_DETAIL_LOOKUPS:
             job["date_state"] = "not_checked"
+            job["date_check_reason"] = "cap_skipped"
             continue
         details_checked += 1
         job["posted_at"], job["date_state"] = _job_page_date_result(job["url"])
+        if job["date_state"] == "not_checked":
+            job["date_check_reason"] = "failed"
 
     if strict and not fetched_page and last_error:
         raise last_error
@@ -402,11 +412,16 @@ def get_ats_postings(
     for item in metadata:
         if item.get("url") in known_urls:
             item["date_state"] = "not_checked"
+            item["date_check_reason"] = "known"
         elif "date_state" not in item:
             item["date_state"] = (
                 "dated" if item.get("posted_at") and _parse_date(item["posted_at"])
                 else "undated" if not item.get("posted_at")
                 else "not_checked"
             )
+            if item["date_state"] == "not_checked":
+                item["date_check_reason"] = "failed"
+        elif item["date_state"] == "not_checked" and not item.get("date_check_reason"):
+            item["date_check_reason"] = "failed"
 
     return metadata

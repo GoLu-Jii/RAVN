@@ -79,6 +79,7 @@ class BlogDateTests(unittest.TestCase):
                 known_urls={"https://example.com/blog/a-post-with-a-long-title"},
             )
         self.assertEqual(posts[0]["date_state"], "not_checked")
+        self.assertEqual(posts[0]["date_check_reason"], "known")
         get.assert_called_once()
 
     def test_metadata_lookup_cap_marks_overflow_not_checked(self):
@@ -94,6 +95,7 @@ class BlogDateTests(unittest.TestCase):
             )
         self.assertEqual(get.call_count, 4)
         self.assertEqual([post["date_state"] for post in posts], ["undated"] * 3 + ["not_checked"])
+        self.assertEqual(posts[-1]["date_check_reason"], "cap_skipped")
 
 
 if __name__ == "__main__":

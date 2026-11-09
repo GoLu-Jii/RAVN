@@ -55,6 +55,7 @@ class SupabasePostgresSmokeTests(unittest.TestCase):
                 name="Temporary PostgreSQL smoke target",
                 website_url="https://example.invalid",
                 github_url="https://github.com/example/project",
+                ats_url="https://careers.example.invalid/jobs",
                 status="ready",
             )
             session.add(target)
@@ -62,13 +63,27 @@ class SupabasePostgresSmokeTests(unittest.TestCase):
             target_id = target.id
 
             commit_time = datetime.now(ZoneInfo("Asia/Kolkata")).astimezone(timezone.utc).replace(microsecond=0)
-            with patch("app.daily.collectors.get_new_commits", return_value=[{
-                "sha": f"smoke-{uuid4()}",
-                "repo": "example/project",
-                "date": commit_time.isoformat(),
-                "message": "PostgreSQL smoke test commit",
-                "url": "https://github.com/example/project/commit/smoke",
-            }]):
+            with (
+                patch("app.daily.collectors.get_new_commits", return_value=[{
+                    "sha": f"smoke-{uuid4()}",
+                    "repo": "example/project",
+                    "date": commit_time.isoformat(),
+                    "message": "PostgreSQL smoke test commit",
+                    "url": "https://github.com/example/project/commit/smoke",
+                }]),
+                patch("app.daily.collectors.get_ats_postings", return_value=[
+                    {
+                        "title": "Smoke role with unresolved date", "location": None,
+                        "url": "https://careers.example.invalid/jobs/unresolved", "posted_at": None,
+                        "date_state": "not_checked", "date_check_reason": "failed",
+                    },
+                    {
+                        "title": "Smoke role with no source date", "location": None,
+                        "url": "https://careers.example.invalid/jobs/undated", "posted_at": None,
+                        "date_state": "undated",
+                    },
+                ]),
+            ):
                 collect_target_events(session, target, today)
 
             feed = list_daily_events(
@@ -91,6 +106,10 @@ class SupabasePostgresSmokeTests(unittest.TestCase):
             self.assertEqual(feed["items"][0]["source_type"], "github")
             self.assertEqual(len(summaries["sources"]), 4)
             self.assertEqual(next(x for x in summaries["sources"] if x["source_type"] == "github")["event_count"], 1)
+            ats_summary = next(x for x in summaries["sources"] if x["source_type"] == "ats")
+            self.assertEqual(ats_summary["candidates_total"], 2)
+            self.assertEqual(ats_summary["failed_items"], 1)
+            self.assertEqual(ats_summary["not_checked_items"], 1)
         finally:
             if target_id is not None:
                 session.query(DailySourceCheckpoint).filter_by(target_id=target_id).delete()
