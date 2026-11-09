@@ -82,6 +82,22 @@ The weekly detector is being built in milestones. These notes explain the pieces
 2. **How can I inspect the exact input?** Run `python scripts/build_weekly_input.py --target N --week YYYY-MM-DD`.
 3. **What happens if the current week alone is too large?** The builder fails with `input_over_budget`; it does not silently remove current evidence.
 
+## M7: Structured LLM analysis
+
+**What it does:** The weekly LLM call turns the assembled evidence into a summary, data limitations, and candidate signals with source names and cited event IDs.
+
+**Why this design:** A pinned model and strict response schema make runs comparable and catch malformed or unsupported output before later verification. Scores and signal types are deliberately absent from the LLM schema; code derives those later.
+
+**How it works:** The versioned prompt labels the weekly input as untrusted evidence and tells the model to cite IDs, respect `first_observed`, and treat Kundali as undated context. The call requests only the configured Groq model and disables fallback providers. JSON/schema errors get up to two retries with the validation error. Provider failures are returned as retryable errors for the scheduler; a response truncated by the output limit fails immediately.
+
+**Trade-offs:** The free provider can rate-limit or change availability, so a failure is visible and must be retried later. Strict validation may reject an otherwise readable response, which is safer than accepting unknown fields or invented scores.
+
+**Likely questions:**
+
+1. **Can a fallback model silently change the analysis?** No. Weekly requests explicitly disable cross-provider fallback.
+2. **What does a retry handle?** Only invalid JSON or schema output, up to two retries; provider failures are left to scheduler retry.
+3. **Can the model set confidence scores or spike/trend labels?** No. Those fields are not allowed in its schema and are computed by code later.
+
 ## M3: Week windows, coverage, and counts
 
 **What it does:** The weekly foundation code identifies Monday-to-Sunday windows in Asia/Kolkata, calculates whether each source was checked, and counts non-baseline events for the current and preceding weeks.

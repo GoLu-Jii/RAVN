@@ -88,6 +88,8 @@ RAVN includes offline automated `unittest` suites for the daily collection pipel
   ```
   The week must start on Monday. The script prints the JSON payload and its token estimate; if it cannot preserve all current-week events within the configured budget, it reports `input_over_budget` instead of dropping them.
 
+  Weekly analysis uses the pinned `RAVN_WEEKLY_WEEKLY_LLM_MODEL` (default `openai/gpt-oss-120b`) through the existing Groq client. The weekly call disables cross-provider fallback; configure the existing `GROQ_API_KEY` to make a live call. Offline tests use a fake client and do not consume provider quota.
+
 - **Full offline gate**:
   ```bash
   python -m unittest discover -s tests -v

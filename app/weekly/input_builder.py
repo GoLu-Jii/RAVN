@@ -13,11 +13,11 @@ from app.targets.models import Target
 from app.weekly.config import WEEKLY_CONFIG, WeeklyConfig
 from app.weekly.coverage import SOURCES, source_coverage
 from app.weekly.counts import weekly_event_counts
+from app.weekly.prompt import PROMPT_VERSION
 from app.weekly.retrieval import retrieve_history
 from app.weekly.windows import previous_week_starts, require_monday, week_window
 
 
-PROMPT_VERSION = "weekly-v1"
 SHORT_TEXT_WORDS = 60
 
 

@@ -328,6 +328,7 @@ class LLMClient:
         temperature: float = 0.1,
         max_tokens: int = 1024,
         provider: Optional[str] = None,
+        allow_fallback: bool = True,
         **kwargs: Any,
     ) -> LLMResponse:
         """
@@ -386,6 +387,9 @@ class LLMClient:
             pipeline = [("Gemini", call_gemini), ("Groq", call_groq), ("OpenRouter", call_openrouter)]
         else:
             pipeline = [("OpenRouter", call_openrouter), ("Gemini", call_gemini), ("Groq", call_groq)]
+
+        if not allow_fallback:
+            pipeline = pipeline[:1]
 
         errors = []
         for name, fn in pipeline:
