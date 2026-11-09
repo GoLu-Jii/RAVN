@@ -82,6 +82,12 @@ RAVN includes offline automated `unittest` suites for the daily collection pipel
   ```
   Checks target and date-window isolation, exact similarity ordering, merged matches, age metadata, weekly counts, and GitHub grouping. The optional PostgreSQL smoke test also compares pgvector ordering with the Python cosine fallback.
 
+- **Inspect a weekly LLM input**:
+  ```bash
+  python scripts/build_weekly_input.py --target 5 --week 2026-11-02
+  ```
+  The week must start on Monday. The script prints the JSON payload and its token estimate; if it cannot preserve all current-week events within the configured budget, it reports `input_over_budget` instead of dropping them.
+
 - **Full offline gate**:
   ```bash
   python -m unittest discover -s tests -v

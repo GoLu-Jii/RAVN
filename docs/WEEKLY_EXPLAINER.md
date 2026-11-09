@@ -66,6 +66,22 @@ The weekly detector is being built in milestones. These notes explain the pieces
 2. **Can one target retrieve another target's events?** No. Every search filters on the requested target ID.
 3. **Are PostgreSQL and local results consistent?** Both use exact cosine similarity; the live Supabase smoke test compares their ordering on the same fixture.
 
+## M6: Weekly input assembly
+
+**What it does:** RAVN assembles the current week, source coverage, exact counts, retrieved history, and the Kundali snapshot into one JSON-safe input with a token estimate.
+
+**Why this design:** Keeping assembly in ordinary code makes the data the model receives inspectable and repeatable. Current-week evidence and baseline context remain separate, and every current-week event stays represented even when the payload needs compaction.
+
+**How it works:** The builder loads non-baseline events from the current week and prior 12 weeks, daily source summaries, and the target's Kundali. It computes source states and exact counts, labels first-observed events, formats the 52-week cadence and job/blog snapshots as baseline context, and attaches M5 retrieval results. It estimates tokens from serialized character length. If needed, it shortens text, groups current GitHub events by repository while retaining every event ID, and reduces retrieved examples. The applied compaction steps and omitted retrieved example IDs are recorded. If the input still exceeds its budget, the builder raises `input_over_budget`.
+
+**Trade-offs:** The token estimate is approximate and intentionally conservative; the later LLM stage still records provider usage when available. Retrieved examples can be omitted under a tight budget, but their weekly match counts remain. Current events are never dropped.
+
+**Likely questions:**
+
+1. **Can compaction hide a current-week event?** No. GitHub events may be grouped, but each event's ID, date, date basis, title, and short text remain in the payload.
+2. **How can I inspect the exact input?** Run `python scripts/build_weekly_input.py --target N --week YYYY-MM-DD`.
+3. **What happens if the current week alone is too large?** The builder fails with `input_over_budget`; it does not silently remove current evidence.
+
 ## M3: Week windows, coverage, and counts
 
 **What it does:** The weekly foundation code identifies Monday-to-Sunday windows in Asia/Kolkata, calculates whether each source was checked, and counts non-baseline events for the current and preceding weeks.
