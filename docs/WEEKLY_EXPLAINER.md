@@ -33,3 +33,19 @@ The weekly detector is being built in milestones. These notes explain the pieces
 1. **Why separate known from unchecked?** A known URL was already stored, so it should not count as missing evidence.
 2. **What does `not_checked_items` mean?** It counts detail fetch failures plus candidates left over by a fetch cap.
 3. **Did the counters change which events are saved?** No. They describe collection coverage; the event-storage rules remain the same.
+
+## M3: Week windows, coverage, and counts
+
+**What it does:** The weekly foundation code identifies Monday-to-Sunday windows in Asia/Kolkata, calculates whether each source was checked, and counts non-baseline events for the current and preceding weeks.
+
+**Why this design:** A source can have no events because it was quiet, because collection failed, or because the target was not configured for it. Activity and coverage are separate so the weekly analysis can describe those cases honestly.
+
+**How it works:** Window helpers map dates and timezone-aware instants to the right Monday, generate the prior weeks, and find the last closed week. Coverage expects days starting on the target's creation date and ending yesterday. A `success` or `baseline_only` summary means that day was collected; missing, failed, and skipped summaries do not. ATS and blog coverage also checks the share of candidates missed by detail failures or caps, excluding already-known URLs. Counts include every non-baseline event in each week.
+
+**Trade-offs:** Historical summaries created before the candidate counters were added contain zero counters, so their historical unverified share cannot be reconstructed. The collection-day records still show whether those older days succeeded.
+
+**Likely questions:**
+
+1. **Why are activity and coverage separate?** A company can have events during a week even if some source days failed to collect.
+2. **Why not count days before target onboarding as missing?** RAVN could not have collected those days, so they are outside the expected coverage window.
+3. **Why exclude known URLs from the unchecked share?** RAVN already has those listings; they are not a failed or skipped lookup.
