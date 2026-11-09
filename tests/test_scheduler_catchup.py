@@ -188,10 +188,12 @@ class StartupCatchUpTests(unittest.TestCase):
         with (
             patch.object(main, "create_scheduler", return_value=SchedulerStub()),
             patch.object(main, "start_catch_up_thread", side_effect=lambda: calls.append("catchup_started")),
+            patch.object(main, "start_weekly_catch_up_thread", side_effect=lambda after: calls.append(("weekly_catchup_started", after))),
         ):
             main.start_daily_scheduler()
 
-        self.assertEqual(calls, ["scheduler_started", "catchup_started"])
+        self.assertEqual(calls[0:2], ["scheduler_started", "catchup_started"])
+        self.assertEqual(calls[2][0], "weekly_catchup_started")
 
 
 if __name__ == "__main__":

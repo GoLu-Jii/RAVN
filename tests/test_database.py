@@ -208,10 +208,28 @@ class SupabasePostgresSmokeTests(unittest.TestCase):
                 },
                 source_states={"github": {"coverage": "complete"}},
                 exact_counts=[{"week_start": week_start.isoformat(), "sources": {"github": 1}}],
-                signals=[],
+                signals=[{
+                    "title": "Smoke signal",
+                    "description": "Temporary smoke evidence.",
+                    "connection_note": "One cited source.",
+                    "sources": ["github"],
+                    "claimed_sources": ["github", "ats"],
+                    "source_claim_mismatch": True,
+                    "signal_types": ["isolated"],
+                    "score": 1.0,
+                    "configured_sources": 2,
+                    "confirmed": 1,
+                    "uncertain": 0,
+                    "source_states": {"github": {"state": "supported", "score": 1.0}},
+                    "cited_event_ids": [event.id],
+                    "uses_first_observed": False,
+                }],
             )
             self.assertEqual(result.summary, "PostgreSQL weekly smoke")
             self.assertEqual(session.query(WeeklyRun).filter_by(id=run.id).one().status, "succeeded")
+            stored_signal = session.query(WeeklySignal).filter_by(result_id=result.id).one()
+            self.assertEqual(stored_signal.claimed_sources, ["github", "ats"])
+            self.assertTrue(stored_signal.source_claim_mismatch)
         finally:
             if target_id is not None:
                 weekly_results = session.query(WeeklyResult).filter_by(target_id=target_id).all()

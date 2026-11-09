@@ -106,7 +106,7 @@ def complete_run(
         run.retryable = False
         run.finished_at = datetime.now(timezone.utc)
         run.llm_provider = llm_result.get("provider")
-        run.llm_model = llm_result.get("model") or WEEKLY_CONFIG.weekly_llm_model
+        run.llm_model = llm_result.get("model")
         run.embedding_model_id = WEEKLY_CONFIG.embed_model_id
         run.prompt_version = llm_result.get("prompt_version") or metadata.get("prompt_version")
         run.prep_version = WEEKLY_CONFIG.prep_version
@@ -135,6 +135,8 @@ def complete_run(
                 uncertain=int(signal["uncertain"]),
                 source_states=_jsonable(signal["source_states"]),
                 cited_event_ids=_jsonable(signal["cited_event_ids"]),
+                claimed_sources=_jsonable(signal.get("claimed_sources", signal["sources"])),
+                source_claim_mismatch=bool(signal.get("source_claim_mismatch", False)),
                 uses_first_observed=bool(signal["uses_first_observed"]),
             ))
         db.commit()

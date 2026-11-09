@@ -94,4 +94,6 @@ class WeeklySignal(Base):
     uncertain: Mapped[int] = mapped_column(Integer, nullable=False)
     source_states: Mapped[dict] = mapped_column(JSON, nullable=False)
     cited_event_ids: Mapped[list] = mapped_column(JSON, nullable=False)
+    claimed_sources: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    source_claim_mismatch: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     uses_first_observed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

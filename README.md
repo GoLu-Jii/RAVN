@@ -94,6 +94,12 @@ RAVN includes offline automated `unittest` suites for the daily collection pipel
   ```
   Checks attempt history, atomic result replacement, failed-run safety, and owner-scoped lookups. Apply the schema with `python -m alembic upgrade head`.
 
+- **Weekly analysis API** (requires the same bearer token as the other target routes):
+  - `POST /targets/{target_id}/weekly/run?week_start=YYYY-MM-DD` runs a Monday-to-Sunday week; omit `week_start` for the last closed week.
+  - `GET /targets/{target_id}/weekly` lists saved results.
+  - `GET /targets/{target_id}/weekly/{week_start}` returns a result and its signals.
+  - `GET /targets/{target_id}/weekly/{week_start}/runs` lists attempts; add `include_input=true` only when you need the saved full input and raw output.
+
 - **Inspect a weekly LLM input**:
   ```bash
   python scripts/build_weekly_input.py --target 5 --week 2026-11-02

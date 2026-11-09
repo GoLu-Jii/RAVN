@@ -130,6 +130,22 @@ The weekly detector is being built in milestones. These notes explain the pieces
 2. **What does a successful rerun do?** It updates the existing target/week result and replaces its signals atomically while preserving all run records.
 3. **How are results isolated between users?** Reads join through the target and filter by its owner ID.
 
+## M10: Orchestrator, API, and scheduler
+
+**What it does:** RAVN can run the complete weekly pipeline manually or on schedule, then expose saved results and run history through owner-scoped API endpoints.
+
+**Why this design:** The manual endpoint makes a specific week easy to inspect and rerun. The scheduler runs the same orchestration for the last closed week, so manual and scheduled behavior stay consistent. A process-local lock prevents overlapping weekly runs within one server process.
+
+**How it works:** The orchestrator embeds missing events, builds the weekly input, skips the LLM for zero-event weeks, calls and validates the LLM when events exist, verifies citations, computes scores and labels, then saves one successful result. Retryable failures are recorded and scheduled with increasing delays for up to six retries over about 12 hours. At startup, a background check reruns the last closed week if it has collected days but no successful result; it waits for daily catch-up to finish and does not retry a terminal nonretryable failure. The cron schedule is Monday 03:00 Asia/Kolkata.
+
+**Trade-offs:** The scheduler and lock are process-local, so a multi-worker deployment can start the same job in more than one process. Supabase remains the shared durable store; deployment-level single scheduling can be considered if the app later runs multiple workers.
+
+**Likely questions:**
+
+1. **What happens when the week has no events?** RAVN stores a deterministic low-activity summary and makes no LLM call.
+2. **What happens when all proposed signals fail citation checks?** The run stores the rejection reasons and publishes a deterministic `no_signals` result with no unverified signal rows.
+3. **Can another user read a target's weekly results?** No. Every weekly API route checks target ownership.
+
 ## M3: Week windows, coverage, and counts
 
 **What it does:** The weekly foundation code identifies Monday-to-Sunday windows in Asia/Kolkata, calculates whether each source was checked, and counts non-baseline events for the current and preceding weeks.

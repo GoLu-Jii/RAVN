@@ -15,7 +15,7 @@ pyjwt
 python-multipart
 
 # Scheduler
-apscheduler
+APScheduler==3.11.3
 
 # LLM
 groq
