@@ -1,8 +1,9 @@
 """Build a complete, JSON-safe weekly analysis input with explicit compaction."""
 from copy import deepcopy
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 import json
 import math
+from zoneinfo import ZoneInfo
 
 from sqlalchemy.orm import Session
 
@@ -226,6 +227,7 @@ def build_weekly_input(
     prompt_version: str = PROMPT_VERSION,
     config: WeeklyConfig = WEEKLY_CONFIG,
     retrieval_data: dict | None = None,
+    as_of_date: date | None = None,
 ) -> dict:
     """Load weekly evidence and build a complete, budget-checked JSON payload."""
     require_monday(week_start)
@@ -247,6 +249,13 @@ def build_weekly_input(
         DailySourceSummary.collection_date <= window.end_date,
     ).order_by(DailySourceSummary.collection_date.asc(), DailySourceSummary.id.asc()).all()
     kundali = db.query(Kundali).filter_by(target_id=target_id).first()
+    if kundali is not None and as_of_date is not None and kundali.created_at is not None:
+        created_at = kundali.created_at
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        snapshot_day = created_at.astimezone(ZoneInfo(config.timezone)).date()
+        if snapshot_day > as_of_date:
+            kundali = None
 
     states = source_coverage(
         target,
