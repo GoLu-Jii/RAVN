@@ -11,7 +11,7 @@ from sqlalchemy.orm import sessionmaker
 from app.auth.models import User
 from app.db.database import create_database_engine
 from app.daily.collectors import collect_target_events
-from app.events.models import DailySourceCheckpoint, DailySourceSummary, Event
+from app.events.models import DailySourceCheckpoint, DailySourceSummary, Event, EventEmbedding
 from app.events.routes import get_daily_summaries, list_daily_events
 from app.targets.models import Target
 
@@ -110,10 +110,32 @@ class SupabasePostgresSmokeTests(unittest.TestCase):
             self.assertEqual(ats_summary["candidates_total"], 2)
             self.assertEqual(ats_summary["failed_items"], 1)
             self.assertEqual(ats_summary["not_checked_items"], 1)
+
+            event = session.query(Event).filter_by(
+                target_id=target.id, source_type="github"
+            ).one()
+            vector = [1.0] + [0.0] * 383
+            session.add(EventEmbedding(
+                event_id=event.id,
+                model_id="smoke-model",
+                dimension=384,
+                prep_version="smoke-v1",
+                text_hash="0" * 64,
+                embedding=vector,
+            ))
+            session.commit()
+            stored = session.query(EventEmbedding).filter_by(event_id=event.id).one()
+            self.assertEqual(len(stored.embedding), 384)
+            self.assertEqual(round(stored.embedding[0], 5), 1.0)
         finally:
             if target_id is not None:
                 session.query(DailySourceCheckpoint).filter_by(target_id=target_id).delete()
                 session.query(DailySourceSummary).filter_by(target_id=target_id).delete()
+                session.query(EventEmbedding).filter(
+                    EventEmbedding.event_id.in_(
+                        session.query(Event.id).filter_by(target_id=target_id)
+                    )
+                ).delete(synchronize_session=False)
                 session.query(Event).filter_by(target_id=target_id).delete()
                 session.query(Target).filter_by(id=target_id).delete()
             if user_id is not None:

@@ -34,6 +34,22 @@ The weekly detector is being built in milestones. These notes explain the pieces
 2. **What does `not_checked_items` mean?** It counts detail fetch failures plus candidates left over by a fetch cap.
 3. **Did the counters change which events are saved?** No. They describe collection coverage; the event-storage rules remain the same.
 
+## M4: Local event embeddings
+
+**What it does:** RAVN stores a searchable 384-number vector for each non-baseline event using the free local `BAAI/bge-small-en-v1.5` model. New and changed events are embedded in batches after scheduled daily collection. A backfill command handles existing events.
+
+**Why this design:** Similarity search needs a numeric representation, and the model runs on the developer's machine without a paid embedding API or another cloud service. PostgreSQL stores vectors through pgvector; SQLite uses JSON so local tests remain simple.
+
+**How it works:** Source-specific deterministic text is prepared from each event and capped at 300 words. RAVN hashes that text and records the model and preparation version. The local model loads only when embeddings are needed, creates 384-dimensional vectors, and normalizes them. The service skips unchanged hashes, updates changed text, and commits in small batches so a failed run can resume. Failures are logged and do not break daily collection.
+
+**Trade-offs:** The first embedding run downloads the model and can use CPU time. The source text is shortened, so some long descriptions are omitted. Embeddings are local and free; vector persistence and later search use the existing Supabase database.
+
+**Likely questions:**
+
+1. **Does this call a paid embedding API?** No. The pinned sentence-transformers model runs locally.
+2. **What happens if embedding fails?** Daily collection remains successful; missing embeddings can be retried by the next scheduled run or backfill command.
+3. **How do text changes refresh vectors?** A hash of the prepared text changes, so the existing event's embedding is updated.
+
 ## M3: Week windows, coverage, and counts
 
 **What it does:** The weekly foundation code identifies Monday-to-Sunday windows in Asia/Kolkata, calculates whether each source was checked, and counts non-baseline events for the current and preceding weeks.

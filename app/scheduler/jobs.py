@@ -10,6 +10,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 from app.db.database import SessionLocal
 from app.daily.collectors import SOURCE_FIELDS, collect_target_events
+from app.embeddings.service import embed_missing_events
 from app.events.models import DailySourceSummary
 from app.targets.models import Target
 
@@ -22,6 +23,15 @@ try:
 except ValueError:
     logger.warning("Invalid RAVN_DAILY_CATCHUP_DAYS; using the default of 3")
     STARTUP_CATCH_UP_DAYS = 3
+
+
+def _embed_target_events(db, target_id: int) -> None:
+    """Embedding failures are isolated from daily collection and logged."""
+    try:
+        report = embed_missing_events(db, target_id=target_id)
+        logger.info("Event embedding completed for target %s: %s", target_id, report)
+    except Exception:
+        logger.exception("Event embedding failed for target %s", target_id)
 
 
 def catch_up_missed_days(days: int = STARTUP_CATCH_UP_DAYS, today: date | None = None) -> None:
@@ -68,6 +78,7 @@ def catch_up_missed_days(days: int = STARTUP_CATCH_UP_DAYS, today: date | None =
                 for missed_date in reversed(missing_dates):
                     report = collect_target_events(db, target, collection_date=missed_date)
                     logger.info("Daily collection catch-up completed: %s", report)
+                _embed_target_events(db, target.id)
         finally:
             db.close()
 
@@ -92,6 +103,7 @@ def collect_all_ready_targets() -> None:
             for target in targets:
                 report = collect_target_events(db, target, collection_date=collection_date)
                 logger.info("Daily collection completed: %s", report)
+                _embed_target_events(db, target.id)
         finally:
             db.close()
 

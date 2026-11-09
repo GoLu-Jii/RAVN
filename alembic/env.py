@@ -11,7 +11,7 @@ from app.db.base import Base
 from app.auth.models import User
 from app.targets.models import Target
 from app.kundali.models import Kundali
-from app.events.models import Event, DailySourceCheckpoint
+from app.events.models import Event, EventEmbedding, DailySourceCheckpoint
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

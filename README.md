@@ -70,6 +70,12 @@ Interactive Swagger API documentation will be available at [http://127.0.0.1:800
 
 RAVN includes offline automated `unittest` suites for the daily collection pipeline and manual verification scripts for live integrations:
 
+- **Weekly embedding tests**:
+  ```bash
+  python -m unittest tests.test_embeddings -v
+  ```
+  Uses fake vectors by default, so it does not download a model. The local model is loaded only when an event needs embedding; its first use downloads `BAAI/bge-small-en-v1.5` (384 dimensions) to the machine's model cache. To backfill stored non-baseline events, run `python scripts/embed_backfill.py` or scope it with `--target <id>`. The process resumes by skipping embeddings whose prepared text has not changed. Set `RAVN_TEST_REAL_EMBEDDINGS=1` to opt into the semantic similarity check, which loads the model.
+
 - **Daily Collector tests**:
   ```bash
   python -m unittest tests.test_daily_dates tests.test_blog_dates tests.test_ats_dates tests.test_daily_collector tests.test_scheduler_catchup -v
