@@ -88,6 +88,12 @@ RAVN includes offline automated `unittest` suites for the daily collection pipel
   ```
   Covers citation rejection rules, source score examples, and code-derived spike/trend labels.
 
+- **Weekly result persistence**:
+  ```bash
+  python -m unittest tests.test_weekly_repository -v
+  ```
+  Checks attempt history, atomic result replacement, failed-run safety, and owner-scoped lookups. Apply the schema with `python -m alembic upgrade head`.
+
 - **Inspect a weekly LLM input**:
   ```bash
   python scripts/build_weekly_input.py --target 5 --week 2026-11-02

@@ -114,6 +114,22 @@ The weekly detector is being built in milestones. These notes explain the pieces
 2. **What happens to a fabricated citation?** The signal is rejected with a reason and can be retained in the run audit record.
 3. **How are spike and trend decided?** From verified citation dates and sources using fixed code rules.
 
+## M9: Weekly result storage
+
+**What it does:** RAVN stores every weekly attempt, keeps one current result for each target and week, and stores its verified signals as child rows.
+
+**Why this design:** Attempt history makes retries and failures auditable, while a unique current result keeps API reads straightforward. A failed attempt must never erase the last successful result.
+
+**How it works:** The migration creates `weekly_runs`, `weekly_results`, and `weekly_signals`. Starting an attempt commits a `running` row. Success updates or creates the unique target/week result, replaces its signals, and marks the attempt successful in one transaction. Failure updates only the attempt row. Owner-scoped repository helpers require the target owner when reading results, runs, or targets.
+
+**Trade-offs:** Full inputs and model outputs are retained for replay and audit, so these JSON/text records use more storage than the compact result. The current schema does not add retention cleanup; that can be considered if actual storage use warrants it.
+
+**Likely questions:**
+
+1. **Does every retry overwrite the old result?** No. Failed attempts only update their run row; the previous successful result remains.
+2. **What does a successful rerun do?** It updates the existing target/week result and replaces its signals atomically while preserving all run records.
+3. **How are results isolated between users?** Reads join through the target and filter by its owner ID.
+
 ## M3: Week windows, coverage, and counts
 
 **What it does:** The weekly foundation code identifies Monday-to-Sunday windows in Asia/Kolkata, calculates whether each source was checked, and counts non-baseline events for the current and preceding weeks.

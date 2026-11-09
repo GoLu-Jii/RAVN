@@ -17,6 +17,8 @@ from app.embeddings.model import EMBEDDING_DIMENSION
 from app.targets.models import Target
 from app.weekly.retrieval import search_similar_events
 from app.weekly.windows import week_start_for
+from app.weekly.models import WeeklyResult, WeeklyRun, WeeklySignal
+from app.weekly.repository import complete_run, create_run
 
 
 class DatabaseEngineTests(unittest.TestCase):
@@ -185,8 +187,38 @@ class SupabasePostgresSmokeTests(unittest.TestCase):
                 [hit["event_id"] for hit in postgres_hits],
                 [hit["event_id"] for hit in python_hits],
             )
+
+            run = create_run(
+                session,
+                target_id=target.id,
+                week_start=week_start,
+                attempt=1,
+            )
+            result = complete_run(
+                session,
+                run,
+                weekly_input={"metadata": {"prompt_version": "smoke-v1", "history_weeks_available": 1}},
+                llm_result={
+                    "output": {"summary": "PostgreSQL weekly smoke", "data_limitations": []},
+                    "raw_output": '{"summary":"PostgreSQL weekly smoke"}',
+                    "provider": "fake",
+                    "model": "smoke-model",
+                    "prompt_version": "smoke-v1",
+                    "usage": {"prompt_tokens": 20, "completion_tokens": 10, "total_tokens": 30},
+                },
+                source_states={"github": {"coverage": "complete"}},
+                exact_counts=[{"week_start": week_start.isoformat(), "sources": {"github": 1}}],
+                signals=[],
+            )
+            self.assertEqual(result.summary, "PostgreSQL weekly smoke")
+            self.assertEqual(session.query(WeeklyRun).filter_by(id=run.id).one().status, "succeeded")
         finally:
             if target_id is not None:
+                weekly_results = session.query(WeeklyResult).filter_by(target_id=target_id).all()
+                for weekly_result in weekly_results:
+                    session.query(WeeklySignal).filter_by(result_id=weekly_result.id).delete()
+                session.query(WeeklyResult).filter_by(target_id=target_id).delete()
+                session.query(WeeklyRun).filter_by(target_id=target_id).delete()
                 session.query(DailySourceCheckpoint).filter_by(target_id=target_id).delete()
                 session.query(DailySourceSummary).filter_by(target_id=target_id).delete()
                 session.query(EventEmbedding).filter(
