@@ -1,8 +1,8 @@
 # RAVN — Build Progress Tracker
 
-Last updated: 2026-11-06
+Last updated: 2026-11-09
 
-Lists only what has been written and tested so far. No plans, no roadmap.
+Records implementation details that have been written and verified; the final section names the remaining planned components.
 
 ---
 
@@ -285,8 +285,7 @@ Lists only what has been written and tested so far. No plans, no roadmap.
   snapshots; stores full events and per-target/date/source summaries including `undated_items`.
   First current-day ATS/blog snapshots are baselined, later undated listings are marked
   `first_observed`, and past-date runs skip undated items and web/social snapshots. Stored tags are
-  fixed source/type labels; semantic product/topic tagging for the planned weekly detector has not
-  been implemented.
+  fixed source/type labels; semantic product/topic tagging is not implemented. The weekly detector instead retrieves related history with embeddings and proposes cited signals with an LLM.
 - `app/events/routes.py` — provides authenticated, target-owner-scoped endpoints:
   `POST /targets/{id}/daily/collect`, `GET /targets/{id}/daily/events` (source, since, limit,
   offset filters; baseline and raw content excluded), `GET /targets/{id}/daily/summaries` (four
@@ -314,9 +313,13 @@ Lists only what has been written and tested so far. No plans, no roadmap.
 
 ---
 
-## Scaffolding (not yet implemented)
-Empty placeholder files remain for future components:
-- `app/config.py`
-- `app/export/pdf.py`
-- `app/weekly/detector.py`, `app/weekly/models.py`,
-  `app/weekly/narrator/{analyst,critic,verifier,writer}.py`
+## Remaining Planned Components
+The weekly detector, weekly models, and weekly APIs are implemented. Remaining planned work includes:
+- LangGraph weekly narrator
+- PDF export
+- Dashboard and full target deletion
+
+
+## Weekly detector implementation update — 2026-11-09
+
+Milestones M0–M11 are complete. The backend now runs scheduled and manual Monday–Sunday analyses, retrieves same-target history from up to 12 prior weeks using local embeddings and pgvector, sends structured signal proposals to the pinned Groq model without fallback, verifies cited event IDs, computes source evidence scores and spike/trend labels in code, and stores every attempt plus the latest successful target/week result. Owner-scoped weekly result and run-history APIs are implemented. Startup catch-up waits for daily recovery and handles the last closed week. The replay CLI rebuilds historical inputs with per-week cutoffs and uses a fake LLM by default. See WEEKLY_EXPLAINER.md and IMPLEMENTATION_GUIDE.md for the current contract. The LangGraph narrator, dashboard, PDF export, and full target deletion remain planned.

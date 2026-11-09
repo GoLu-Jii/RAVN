@@ -1,256 +1,128 @@
+# RAVN — Implementation Guide
+
+This guide describes the current backend implementation. The frontend/dashboard, LangGraph narrator, and PDF export remain planned. The backend weekly signal detector is implemented.
+
 ## Repository Structure
 
-This guide covers the implemented runtime and the planned product architecture. Weekly analysis, the dashboard, and PDF export are still planned components.
-
-```
-ravn/
-├── app/
-│   ├── main.py                 # FastAPI app entrypoint
-│   ├── config.py               # empty placeholder; environment reads are currently module-local
-│   │
-│   ├── auth/
-│   │   ├── routes.py           # signup/login endpoints
-│   │   ├── models.py           # User model
-│   │   └── utils.py            # password hashing, JWT handling
-│   │
-│   ├── targets/
-│   │   ├── routes.py           # preview, confirm, list/status targets, Kundali endpoints
-│   │   ├── models.py           # Target model
-│   │   └── onboarding.py       # source discovery logic (scrape + LLM classify)
-│   │
-│   ├── kundali/
-│   │   ├── models.py           # Kundali model (table: kundali)
-│   │   ├── builder.py          # GitHub fetchers (list_repos, get_languages, get_commit_activity, get_recent_commits)
-│   │   └── synthesis.py        # orchestrates 4 data tracks, aggregates signals, DB upsert, LLM strategic intelligence dossier
-│   │
-│   ├── daily/
-│   │   ├── collectors.py       # date-specific collection and per-source daily summaries
-│   │   └── fetchers/
-│   │       ├── github.py       # daily GitHub commit fetcher
-│   │       ├── ats.py          # ATS API fetcher (Greenhouse/Lever/Ashby/Workable) + HTML career portal fallback
-│   │       ├── blogs.py        # RSS/Atom feed parser + trafilatura HTML article fallback
-│   │       └── socials.py      # web landing page & social updates
-│   │
-│   ├── events/
-│   │   ├── models.py           # Event model (unified table)
-│   │   └── routes.py           # drilldown/detail endpoints
-│   │
-│   ├── weekly/                 # planned; placeholder modules are empty
-│   │   ├── models.py           # planned WeeklyDigest, WeeklyCategoryCount models
-│   │   ├── detector.py         # planned spike + trend detection logic
-│   │   └── narrator/           # planned Analyst / Verifier / Writer / Critic
-│   │       ├── analyst.py
-│   │       ├── verifier.py
-│   │       ├── writer.py
-│   │       └── critic.py
-│   │
-│   ├── export/
-│   │   └── pdf.py              # planned PDF generation from a digest
-│   │
-│   ├── scheduler/
-│   │   └── jobs.py             # APScheduler setup; daily job only
-│   │
-│   ├── llm/
-│   │   └── clients.py          # model-aware multi-provider LLM router with provider-specific fallback order
-│   │
-│   └── db/
-│       ├── database.py         # SQLAlchemy engine/session setup
-│       └── base.py             # shared SQLAlchemy declarative base
-│
-├── alembic/                    # DB migrations
-├── tests/
-├── requirements.txt
-├── .env.example
-└── README.md
+```text
+app/
+  auth/          authentication routes, user model, password/JWT helpers
+  targets/       onboarding, source discovery, target routes/model
+  kundali/       Day 0 collection, profile model, LLM dossier synthesis
+  daily/         daily collector and GitHub/ATS/blog/web-social fetchers
+  events/        event/source-summary models and daily APIs
+  embeddings/    local embedding model, text preparation, persistence service
+  weekly/        config, windows, coverage, counts, retrieval, input, LLM,
+                 verification, scoring, persistence, replay, routes, detector
+  scheduler/     daily and weekly APScheduler jobs plus recovery/retries
+  db/            SQLAlchemy engine/session and declarative base
+  llm/           existing multi-provider LLM client
+  export/        planned PDF export
+alembic/         database migration history
+scripts/         migration, embedding backfill, input inspection, weekly replay
+ tests/          offline unittest suites and opt-in integration checks
 ```
 
-Each top-level folder under `app/` maps to one component of the architecture, so component responsibilities and code locations stay aligned as the project grows.
+## Technology and Runtime
 
----
-
-# RAVN — watch-it
-
-Automated competitive intelligence for tech & AI companies. RAVN watches a target company's public footprint continuously, builds historical context, and correlates signals across sources to surface what a competitor is likely building — before they announce it.
-
----
-
-## Table of Contents
-- [Tech Stack](#tech-stack)
-- [Repository Structure](#repository-structure)
-- [Data Model](#data-model)
-- [Architecture Overview](#architecture-overview)
-
----
-
-## Tech Stack
-
-| Layer | Choice |
+| Layer | Current choice |
 |---|---|
-| Language | Python |
-| Web framework | FastAPI |
-| Database | SQLite (`ravn.db`, current implementation); PostgreSQL is a future deployment target |
-| ORM / migrations | SQLAlchemy + Alembic |
-| Scheduler | APScheduler |
-| Current Kundali LLM routing | Groq (`openai/gpt-oss-120b`) → Gemini → OpenRouter (fallbacks for that requested model) |
-| Auth | bcrypt + PyJWT + FastAPI `HTTPBearer` |
-| Scraping / fetching | httpx, BeautifulSoup4, feedparser, trafilatura |
-| PDF export | WeasyPrint |
-| Config | python-dotenv |
-| Validation | Pydantic |
-| Hosting | Railway or Render are proposed options; persistence and scheduler deployment are not configured/validated |
+| Language/API | Python 3.11, FastAPI |
+| Persistence | SQLAlchemy, Alembic; SQLite supported, current deployment uses the existing Supabase PostgreSQL database |
+| Vector search | pgvector on PostgreSQL; exact Python cosine search for SQLite/tests |
+| Embeddings | Local `BAAI/bge-small-en-v1.5`, 384 dimensions, sentence-transformers; no embedding API |
+| Weekly LLM | Pinned `openai/gpt-oss-120b` through the existing Groq client, provider fallback disabled for weekly calls |
+| Other LLM calls | Kundali synthesis and onboarding use the existing multi-provider routing/fallback behavior |
+| Scheduling | In-process APScheduler with Asia/Kolkata timezone |
+| Collection | httpx, BeautifulSoup, feedparser, trafilatura; source-specific public APIs where available |
+| Tests | Python `unittest`; offline tests use fakes, optional live database/model checks are opt-in |
 
-### Notes per component
+The project owner uses an existing free-tier Supabase project because Docker is unavailable. No second cloud service is required. `DATABASE_URL` selects the same database for the app and Alembic; never commit the URL. SQLite remains usable for local development and all unit tests. The scheduler uses an in-memory job store and a process-local lock, so only one application process should own scheduled jobs unless deployment-level coordination is added.
 
-**Auth** — `bcrypt` for password hashing and `PyJWT` for JWT issuance and validation, with FastAPI's `HTTPBearer` dependency for token authorization in Swagger UI. Auth endpoints accept JSON payloads.
+## Configuration
 
-**Onboarding (source discovery)** — `httpx` for page fetching, `BeautifulSoup4` for parsing homepage links, with dynamic URL normalization and LLM classification into GitHub / ATS / blog / web-social source categories.
+Generic settings include `DATABASE_URL`, `JWT_SECRET_KEY`, optional `GITHUB_TOKEN`, and provider keys such as `GROQ_API_KEY`. Weekly settings are read from environment variables named `RAVN_WEEKLY_<FIELD>`; defaults are defined in `app/weekly/config.py`.
 
-**Kundali Builder** — `httpx` for GitHub REST API calls (languages, commit cadence, active repos), `feedparser` for RSS/Atom feeds with `trafilatura` HTML article scraping fallback for non-RSS blogs, and ATS API probing with HTML career portal fallback for company-hosted job sites. Derives a multi-track strategic intelligence dossier via LLM synthesis.
+| Variable | Default | Purpose |
+|---|---:|---|
+| `RAVN_WEEKLY_WEEK_START` | `monday` | Fixed Monday week boundary |
+| `RAVN_WEEKLY_SCHEDULE_HOUR` / `MINUTE` | `3` / `0` | Monday run time in `Asia/Kolkata` |
+| `RAVN_WEEKLY_TIMEZONE` | `Asia/Kolkata` | Calendar and scheduler timezone |
+| `RAVN_WEEKLY_HISTORY_WEEKS` | `12` | Historical retrieval/count window |
+| `RAVN_WEEKLY_HALF_LIFE_WEEKS` | `2.0` | Reported age weight; does not change retrieval ranking |
+| `RAVN_WEEKLY_MAX_QUERIES` | `40` | Current-week query cap |
+| `RAVN_WEEKLY_EXAMPLE_K` / `COUNT_K` | `5` / `50` | Similar examples and per-query match-count limits |
+| `RAVN_WEEKLY_MIN_SIMILARITY` | unset | Optional similarity cutoff |
+| `RAVN_WEEKLY_INPUT_TOKEN_BUDGET` | `12000` | Estimated input budget |
+| `RAVN_WEEKLY_RETRIEVAL_BUDGET_SHARE` | `0.5` | Portion of input budget reserved for retrieval |
+| `RAVN_WEEKLY_MAX_OUTPUT_TOKENS` / `MAX_SIGNALS` | `4000` / `8` | LLM response bounds |
+| `RAVN_WEEKLY_UNVERIFIED_THRESHOLD` | `0.20` | ATS/blog missed-candidate share marking coverage partial |
+| `RAVN_WEEKLY_TREND_MIN_WEEKS` | `3` | Distinct citation weeks required for a trend label |
+| `RAVN_WEEKLY_WEEKLY_LLM_MODEL` | `openai/gpt-oss-120b` | Pinned weekly model (field name: `weekly_llm_model`) |
+| `RAVN_WEEKLY_EMBED_MODEL_ID` | `BAAI/bge-small-en-v1.5` | Local embedding model identifier |
+| `RAVN_WEEKLY_PREP_VERSION` | `v1` | Version of event text preparation |
+| `RAVN_WEEKLY_RETRY_ATTEMPTS` | `6` | Scheduled retries after retryable failure |
 
-**Daily Collector** — accepts a collection date, defaulting to today in Asia/Kolkata, and stores full event detail plus one source summary for GitHub, ATS, blog, and web/social. The scheduled run remains at 23:59 Asia/Kolkata; manual runs use the same date window. Event one-liners and highlights use deterministic formatting, not an LLM. Pull request and dependency-change events remain part of the broader project scope but are not collected by this implementation yet.
+The environment variable prefix is `RAVN_WEEKLY_` followed by the configuration field name uppercased (for example `RAVN_WEEKLY_WEEKLY_LLM_MODEL`). The Groq key is the existing `GROQ_API_KEY`. The replay command uses a fake no-signal client by default; `--live` explicitly enables the provider call.
 
-The shared `_parse_date` in `app/daily/dates.py` normalizes aware datetimes into UTC for storage and assigns calendar dates after conversion to Asia/Kolkata. Naive datetimes are treated as UTC; date-only values keep their date. It accepts ISO strings (including `Z`), RFC-style strings, epoch seconds/milliseconds, and feedparser `time.struct_time`; unparseable values return `None`.
+## Daily Collection
 
-ATS/blog items with source dates are stored only when their Asia/Kolkata date matches the collection date. On a current-day run, undated ATS/blog listings are baselined on the first successful snapshot, then newly appearing listings are recorded with the time RAVN first observed them. Their `date_basis` is `first_observed`, not the employer's publication date. On past-date runs, undated listings are counted but not stored or used to initialize the current snapshot baseline. Past-date web/social collection is skipped because those snapshots cannot be reconstructed. Current-day first web/social snapshots are baseline records and hidden from the event feed.
+`POST /targets/{id}/daily/collect` collects all configured sources for the current Asia/Kolkata day. The scheduler runs at 23:59. Dated GitHub commits, job listings, and blog posts are assigned by their source date after timezone normalization. On current-day runs, the first ATS/blog listing snapshot is baseline; later genuinely undated new listings can be stored with `date_basis=first_observed`. Known URLs, failed detail requests, and cap overflow are not stored as undated items. Past-date collection skips web/social snapshots and first-observed items. Daily collection does not call an LLM.
 
-The daily source summary includes `undated_items`, the number of ATS/blog candidates confirmed to have no usable source date on that collection run. Candidates that were not checked because their URL is already stored, a detail fetch failed, or the lookup cap was reached are excluded from this count and reported separately as `not_checked_items` in the collection result. A live fetch on 2026-11-06 against the configured ready targets found four target records but only one unique ATS URL and one unique blog URL (all four records point to Stripe): all 6 returned ATS listings and all 5 returned blog entries had dates after the date-extraction changes. On 2026-11-05 the earlier implementation returned 0/5 and 0/15 dated items. These are point-in-time samples, not representative measurements across companies.
+Daily summaries store one row per target/date/source and include source status, event count, highlight, undated count, and candidate-coverage counters. The event feed excludes baseline rows and raw content; the event detail endpoint includes raw content. The four source highlights are available by collection date.
 
-The Stripe URL `https://stripe.com/careers` is not recognized as one of the supported ATS API hosts, so `get_ats_postings()` uses the company-page HTML fallback. It reads `datePosted` from JSON-LD `JobPosting` blocks on unseen detail pages (20 detail lookups maximum per collection, with request timeouts). Failed requests or missing JSON-LD dates remain undated; current-day listings use the existing baseline/first-observed handling, while past-date runs skip them. Existing event URLs are checked before detail-page requests.
+After the scheduler starts, startup catch-up runs in a background thread for recent dates missing summaries or with all four sources failed, bounded by `RAVN_DAILY_CATCHUP_DAYS` (default 3). It can recover dated sources only; web/social snapshots and first-observed events cannot be reconstructed for past dates.
 
-For provider-specific adapters, Lever's live public `leverdemo` response (10 postings) included `createdAt` as a Unix-millisecond field; the code maps it as the source date. The [Lever Postings API documentation](https://github.com/lever/postings-api#api-methods) documents the public JSON postings endpoint, while the live payload confirms the field exists. Greenhouse's [Job Board API docs](https://docs.greenhouse.io/job-board) document `updated_at` in list responses and `first_published` on individual job responses. The adapter uses `updated_at` only to pre-filter candidates for the requested date, then checks the individual job's `first_published`. A live Stripe Greenhouse response on 2026-11-06 confirmed both fields; a sampled listing had `first_published` 2026-09-09 and `updated_at` 2026-10-29, confirming that edits can make the update date misleading. Ashby's [public job posting API docs](https://developers.ashbyhq.com/docs/public-job-posting-api) specify `publishedAt`.
+GitHub daily collection currently stores commits. Pull requests and dependency-change events remain in the broader product scope and are not implemented.
 
-Blog RSS entries use `published`, then `published_parsed`, `updated`, and `updated_parsed`. The HTML fallback uses a listing card's `<time datetime>` value; when absent, it checks trafilatura metadata on up to three unseen article pages. The same shared date parser handles these source values. Stripe sample cards and article metadata were spot-checked for matching published dates. A live GitHub Blog fetch also returned RSS publication timestamps for its selected posts.
+## Weekly Analysis Pipeline
 
-### Planned weekly processing (not implemented)
+The week is Monday through Sunday in Asia/Kolkata. The scheduled job runs Monday at 03:00 for the last closed week. Manual API runs can select any Monday. Each target/week has one latest successful result and a separate row for every attempt.
 
-The planned reporting week is Monday through Sunday, using Asia/Kolkata `collection_date` values. The weekly job is planned for 03:00 Asia/Kolkata each Monday. Embedding-based retrieval with a vector store and the LangGraph agent stage remain planned; there is no vector database or LangGraph pipeline in the current implementation.
+1. Embed missing or changed non-baseline events locally. The daily collection path also attempts embeddings after collection; failures do not fail collection.
+2. Compile all non-baseline current-week events, source activity/coverage, exact per-source counts for this week and the prior 12 weeks, and a separate Kundali baseline context.
+3. Retrieve same-target, non-baseline events from up to 12 earlier weeks. Search ranks by cosine similarity only; age and a two-week half-life weight are separate metadata. PostgreSQL uses pgvector; SQLite uses exact Python cosine.
+4. Compact the serialized input within the configured estimate, preserving all current-week events. If it still exceeds budget, fail explicitly.
+5. Ask the pinned Groq model for a summary, limitations, and signal proposals with source claims and event IDs. Weekly calls disable provider fallback. Invalid JSON/schema responses receive bounded correction retries; truncation and provider errors fail visibly.
+6. Verify citations against the event table: target, window, baseline flag, claimed source, duplicate IDs, and at least one current-week citation. Record rejected proposals and source-claim mismatches.
+7. Compute source scores and signal labels in code. A supported configured source scores 1; a complete source with no cited support scores 0; a partial/unavailable source scores 0.5; an unconfigured source scores 0 and is excluded from configured-source count. The total is a 0–4 evidence score, not a probability. A spike has current-week cited support from two or more sources; a trend has citations in three or more distinct weeks; otherwise a signal is isolated.
+8. Persist the attempt, full input/output audit data, result summary, exact counts, source states, and verified signals. A failed attempt never replaces the previous successful result. Zero-event and no-verified-signal weeks get deterministic nonblank summaries.
 
-The source checkpoint records whether the initial undated ATS/blog listing snapshot has been baselined. Existing checkpoints are unmarked by migration, so the first successful current-day collection baselines listings it sees; a historical catch-up run does not set this marker. Later unseen current-day listings are recorded as first-observed events.
+The weekly process lock and APScheduler are process-local. Retry delays are 10, 30, 60, 120, 240, and 240 minutes. Startup recovery waits for daily catch-up and retries the last closed week only when collection exists and there is no success or terminal nonretryable failure.
 
-The collector adds fixed source/type labels (`github`, `commit`; `hiring`, `job_posting`; `engineering`, `blog`; `web_update`). These are not the product/topic taxonomy needed for cross-source spike and trend analysis. The weekly detector and semantic tagging are not implemented. Recommended design to settle before detector work: a separate deterministic tagging step that assigns a versioned taxonomy at ingestion, so detector logic can focus on counts and correlation and existing events can be backfilled. This is a design recommendation, not implemented behavior.
+### Weekly API
 
-**Event Store** — SQLite (`ravn.db`) + SQLAlchemy, using `JSON` columns for tags and Kundali signals. PostgreSQL deployment is not implemented or validated yet.
+All routes require authentication and enforce target ownership:
 
-**Collection recovery and hosting caveats** — after starting APScheduler, app startup launches catch-up in a background thread. It searches backward from yesterday for up to three completed dates per ready target that have no summary row or whose four source summaries all have `failed` status, stopping at the target's creation date. Set `RAVN_DAILY_CATCHUP_DAYS` to change the default count. It runs the same collector with the historical date: dated GitHub, ATS, and blog events can be recovered, while web/social and undated first-observed items are skipped. Catch-up and scheduled collection share a process-local lock to avoid overlapping runs. Existing source data may no longer expose deleted or edited items, so catch-up cannot guarantee a complete historical reconstruction. The in-process APScheduler remains at 23:59 Asia/Kolkata with its in-memory job store. SQLite is the current local database; Railway/Render persistent-volume and multi-instance scheduler behavior have not been configured or validated.
+- `POST /targets/{target_id}/weekly/run?week_start=YYYY-MM-DD` — run a Monday-start week; defaults to the last closed week.
+- `GET /targets/{target_id}/weekly` — list saved weekly results.
+- `GET /targets/{target_id}/weekly/{week_start}` — result and verified signals.
+- `GET /targets/{target_id}/weekly/{week_start}/runs?include_input=true` — attempt history; full audit payload is optional.
 
-**Testing status** — existing integration scripts remain manual print-and-inspect checks. Offline `unittest` suites cover source date parsing, blog date fallbacks, ATS JSON-LD and Greenhouse date handling, daily collector boundaries/deduplication/baselines/past dates/API output, and startup catch-up. Run them with `python -m unittest tests.test_daily_dates tests.test_blog_dates tests.test_ats_dates tests.test_daily_collector tests.test_scheduler_catchup -v`.
+### Replay and inspection
 
-**Weekly Signal Detector** — planned; the current `weekly/detector.py` is an empty placeholder.
+- `python scripts/build_weekly_input.py --target N --week YYYY-MM-DD` prints an assembled input.
+- `python scripts/replay_weekly.py --target N --weeks K` replays the most recent closed weeks and writes a Markdown report. The default fake LLM is not a quality evaluator; it checks pipeline/report mechanics without a provider call. `--live` uses the configured Groq model. Replay applies a week-end cutoff to events, summaries, and Kundali snapshots and does not write weekly run/result rows. It may persist missing local embeddings.
+- `python scripts/embed_backfill.py --target N` resumes embedding backfill in batches.
 
-**Weekly Narrator** — planned; the Analyst, Verifier, Writer, and Critic modules are empty placeholders.
+## Data Model Summary
 
-**PDF Exporter** — planned; `app/export/pdf.py` is an empty placeholder.
-
----
-
-## Data Model
-
-Conceptual schema — fields and relationships, not raw SQL.
-
-### `users`
-| Field | Notes |
+| Table | Role |
 |---|---|
-| `id` | PK |
-| `email` | Unique |
-| `password_hash` | bcrypt hashed |
-| `created_at` | |
+| `users`, `targets` | Accounts and owner-scoped target configuration |
+| `kundali` | One current Day 0 profile per target |
+| `events` | Unified source event store; includes collection date, source event time, baseline flag, tags, and date basis |
+| `daily_source_checkpoints` | Per-source collection state and first-snapshot markers |
+| `daily_source_summaries` | Per-target/date/source status, highlight, counts, and ATS/blog coverage breakdown |
+| `event_embeddings` | Versioned 384-dimensional vector per event/model/preparation version |
+| `weekly_runs` | Every attempt, status/retry metadata, models, tokens, input/output, and rejection audit |
+| `weekly_results` | Latest successful result and exact counts per target/week |
+| `weekly_signals` | Verified signal descriptions, citations, scores, source states, labels, and claim audit |
 
-### `targets`
-| Field | Notes |
-|---|---|
-| `id` | PK |
-| `user_id` | FK → `users` |
-| `name` | Target name |
-| `website_url` | |
-| `github_url`, `ats_url`, `blog_url`, `web_social_url` | nullable — any source may be missing |
-| `status` | `building` / `ready` / `failed` |
-| `created_at` | |
+Alembic manages schema changes. PostgreSQL is the active cloud database configured in the owner's ignored `.env`; SQLite migrations are also kept working and exercised on temporary copies. Never run destructive migration or data-copy commands against the original local `ravn.db`.
 
-### `kundali`
-| Field | Notes |
-|---|---|
-| `id` | PK |
-| `target_id` | FK → `targets.id`, unique, one-to-one |
-| `tech_stack` | JSON — languages detected and byte counts |
-| `focus_areas` | JSON — LLM strategic intelligence dossier (executive summary, themes, correlations, forecasts) |
-| `cadence_baseline` | JSON — 52-week commit activity distribution |
-| `recent_commits` | JSON — repos with recent commits in 45-day window |
-| `ats_postings` | JSON — active job requisitions from ATS/careers |
-| `web_social_status` | JSON — landing page / social content snapshot |
-| `blog_status` | JSON — cached blog articles / RSS feed entries |
-| `created_at` | |
+## Tests and Operational Limits
 
-### `events` (unified table for all source types)
-| Field | Notes |
-|---|---|
-| `id` | PK |
-| `target_id` | FK → `targets` |
-| `source_type` | `github` / `ats` / `blog` / `web_social` |
-| `source_key` | Stable source identifier; unique with target and source type for deduplication |
-| `title`, `url` | Event title and source link |
-| `raw_content` | TEXT — full commit message / job post / blog text |
-| `one_liner` | TEXT — dashboard summary |
-| `collection_date` | Asia/Kolkata calendar date assigned to this daily collection |
-| `tags` | JSON array of fixed source/type labels today; semantic product/topic tags are not implemented |
-| `event_date` | Source event time when available; otherwise the observation time for first-observed events |
-| `date_basis` | `source` or `first_observed`; nullable only for any historical event that cannot be safely classified |
-| `ingested_at` | when RAVN captured it |
-| `is_baseline` | Hide initial web/social snapshots and initial undated ATS/blog listings from the daily event feed |
+Run the offline suite with `python -m unittest discover -s tests -v`; it uses SQLite and fakes and does not call external APIs or download the embedding model. Optional live Supabase and real-model checks are explicitly gated. Use `python -m compileall app scripts` for a syntax pass.
 
-### `daily_source_checkpoints`
-| Field | Notes |
-|---|---|
-| `target_id`, `source_type` | Unique checkpoint per target and source |
-| `last_success_at` | Timestamp of the last successful source collection |
-| `last_content_hash` | Most recent web/social snapshot hash, used to detect page changes |
-| `undated_items_baselined_at` | Marks the initial undated ATS/blog listing snapshot so existing open listings are not emitted as new events |
-
-### `daily_source_summaries`
-| Field | Notes |
-|---|---|
-| `target_id`, `collection_date`, `source_type` | Unique source summary for each target and date |
-| `status` | Stored values: `success`, `failed`, `skipped`, and `baseline_only` for historical baseline records. If no row exists, the API returns `not_recorded` because collection status is unknown. |
-| `event_count` | Current-day events stored for this source |
-| `undated_items` | Number of ATS/blog candidates without a usable source date on that collection run; defaults to 0. Historical counts cannot be reconstructed, so existing rows receive 0 during migration. |
-| `highlight` | Concise stored summary; records “no events” when the source returns none |
-| `error`, `collected_at` | Latest source error and collection time |
-
-### Planned: `weekly_category_counts` (not in the current database)
-| Field | Notes |
-|---|---|
-| `id` | PK |
-| `target_id` | FK → `targets` |
-| `week_start_date` | |
-| `tag` | |
-| `count` | number of events with this tag, for this target, in this week |
-
-Planned purpose: let the Weekly Signal Detector compare recent weeks' tag activity without re-scanning full historical raw event content.
-
-### Planned: `weekly_digests` (not in the current database)
-| Field | Notes |
-|---|---|
-| `id` | PK |
-| `target_id` | FK → `targets` |
-| `week_start_date`, `week_end_date` | |
-| `signals` | JSON — spike/trend signals with confidence levels |
-| `narrative` | TEXT — the final digest text |
-| `created_at` | |
-
----
-
-## Architecture Overview
-
-The implemented pipeline uses bounded LLM calls for onboarding link classification and Day 0 Kundali synthesis. Daily collection is deterministic and does not call an LLM. The weekly detector and narrator remain planned.
-
-**Components:**
-1. **Auth Handler** — sign-up/login, session tokens, scopes all requests to the logged-in user.
-2. **Onboarding Handler** — resolves a company website URL into confirmed source URLs (GitHub, ATS, blog, web/social), with user review.
-3. **Kundali Builder** (background job) — builds the Day-0 historical baseline profile per target.
-4. **Daily Collector** (scheduled at 11:59 PM Asia/Kolkata, or manually triggered) — records activity for the selected date and stores one summary per configured source for that date.
-5. **Event Store** (SQLite) — holds users, targets, Kundali profiles, daily events, checkpoints, and daily summaries. PostgreSQL support and weekly tables are planned.
-6. **Weekly Signal Detector** (planned) — consumes events after a semantic tagging step has been designed and implemented, then detects single-week spikes and multi-week trends. Current source/type labels are insufficient; tagging ownership and taxonomy remain open design decisions.
-7. **Weekly Narrator** (planned) — verifies and writes the executive digest.
-8. **PDF Exporter** (planned) — generates a downloadable PDF of a digest, on request.
-9. **Dashboard/UI** (planned) — will display one-liners, drilldowns, Kundali profiles, and digests, scoped per user.
-
-**Guardrails:** public data only, graceful degradation when a source is unavailable, no manual noise-tuning UI. Daily collection records events without LLM ranking; weekly prioritization is planned.
+The in-process scheduler is not a distributed scheduler, the weekly model may be unavailable or rate-limited on its free tier, historical source dates may be incomplete, semantic embeddings are not topic tags, and the LLM may propose weak correlations that citation verification cannot judge semantically. The planned narrator may improve explanation, but it is not implemented here.

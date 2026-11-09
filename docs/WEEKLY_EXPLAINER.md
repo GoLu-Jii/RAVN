@@ -1,10 +1,10 @@
 # Weekly Signal Detector: plain-language notes
 
-The weekly detector is being built in milestones. These notes explain the pieces already implemented; the detector itself is still under construction.
+The weekly backend detector is implemented. These notes explain how its data store, retrieval, LLM stage, verification, persistence, scheduling, and replay work. The LangGraph narrator, PDF export, and dashboard remain planned.
 
 ## M1: PostgreSQL and pgvector
 
-**What it does:** RAVN can now use the existing Supabase PostgreSQL database, with pgvector enabled for the embeddings that will be added later. SQLite still works for local tests.
+**What it does:** RAVN can now use the existing Supabase PostgreSQL database, with pgvector enabled for the stored event embeddings and similarity retrieval. SQLite still works for local tests.
 
 **Why this design:** PostgreSQL provides the durable tables the weekly stage needs, and pgvector lets those tables store and search numeric representations of events. Using the already available Supabase project avoids installing Docker or adding another service.
 
@@ -33,6 +33,23 @@ The weekly detector is being built in milestones. These notes explain the pieces
 1. **Why separate known from unchecked?** A known URL was already stored, so it should not count as missing evidence.
 2. **What does `not_checked_items` mean?** It counts detail fetch failures plus candidates left over by a fetch cap.
 3. **Did the counters change which events are saved?** No. They describe collection coverage; the event-storage rules remain the same.
+
+
+## M3: Week windows, coverage, and counts
+
+**What it does:** The weekly foundation code identifies Monday-to-Sunday windows in Asia/Kolkata, calculates whether each source was checked, and counts non-baseline events for the current and preceding weeks.
+
+**Why this design:** A source can have no events because it was quiet, because collection failed, or because the target was not configured for it. Activity and coverage are separate so the weekly analysis can describe those cases honestly.
+
+**How it works:** Window helpers map dates and timezone-aware instants to the right Monday, generate the prior weeks, and find the last closed week. Coverage expects days starting on the target's creation date and ending yesterday. A `success` or `baseline_only` summary means that day was collected; missing, failed, and skipped summaries do not. ATS and blog coverage also checks the share of candidates missed by detail failures or caps, excluding already-known URLs. Counts include every non-baseline event in each week.
+
+**Trade-offs:** Historical summaries created before the candidate counters were added contain zero counters, so their historical unverified share cannot be reconstructed. The collection-day records still show whether those older days succeeded.
+
+**Likely questions:**
+
+1. **Why are activity and coverage separate?** A company can have events during a week even if some source days failed to collect.
+2. **Why not count days before target onboarding as missing?** RAVN could not have collected those days, so they are outside the expected coverage window.
+3. **Why exclude known URLs from the unchecked share?** RAVN already has those listings; they are not a failed or skipped lookup.
 
 ## M4: Local event embeddings
 
@@ -146,18 +163,46 @@ The weekly detector is being built in milestones. These notes explain the pieces
 2. **What happens when all proposed signals fail citation checks?** The run stores the rejection reasons and publishes a deterministic `no_signals` result with no unverified signal rows.
 3. **Can another user read a target's weekly results?** No. Every weekly API route checks target ownership.
 
-## M3: Week windows, coverage, and counts
+## M11: Historical replay
 
-**What it does:** The weekly foundation code identifies Monday-to-Sunday windows in Asia/Kolkata, calculates whether each source was checked, and counts non-baseline events for the current and preceding weeks.
+**What it does:** Rebuilds recent closed weeks one by one and writes a Markdown report with event counts, verified signals, citation pass rate, rejection reasons, source scores, token counts, and retrieval similarity ranges. It also suggests a possible similarity cutoff from the observed retrieval scores without changing configuration.
 
-**Why this design:** A source can have no events because it was quiet, because collection failed, or because the target was not configured for it. Activity and coverage are separate so the weekly analysis can describe those cases honestly.
+**Why this design:** A replay lets us inspect historical behavior and catch data leakage before trusting the scheduled detector. Each replay uses only information available through that week's end, including the Kundali snapshot. The fake LLM is the default, so a normal replay does not contact a provider.
 
-**How it works:** Window helpers map dates and timezone-aware instants to the right Monday, generate the prior weeks, and find the last closed week. Coverage expects days starting on the target's creation date and ending yesterday. A `success` or `baseline_only` summary means that day was collected; missing, failed, and skipped summaries do not. ATS and blog coverage also checks the share of candidates missed by detail failures or caps, excluding already-known URLs. Counts include every non-baseline event in each week.
+**How it works:** Run `python scripts/replay_weekly.py --target N --weeks K`. The harness backfills missing local embeddings if necessary, rebuilds each input with a historical cutoff, and runs either a fake no-signal response or the real configured model when `--live` is supplied. It verifies any proposed citations and renders a report. It does not create weekly run or result records, although missing embeddings can be saved.
 
-**Trade-offs:** Historical summaries created before the candidate counters were added contain zero counters, so their historical unverified share cannot be reconstructed. The collection-day records still show whether those older days succeeded.
+**Trade-offs:** Fake mode checks replay mechanics and report generation, not whether the signals are useful. For a quality evaluation, use `--live` with the configured free-tier provider and review the citations and report. Embedding backfill can take time the first time because the local model must be downloaded.
 
 **Likely questions:**
 
-1. **Why are activity and coverage separate?** A company can have events during a week even if some source days failed to collect.
-2. **Why not count days before target onboarding as missing?** RAVN could not have collected those days, so they are outside the expected coverage window.
-3. **Why exclude known URLs from the unchecked share?** RAVN already has those listings; they are not a failed or skipped lookup.
+1. **Can later events leak into an earlier replay week?** Event queries and retrieval are bounded by that week's end; a Kundali created after that date is excluded.
+2. **Does replay change the saved weekly result?** No. It writes only the Markdown report, except for missing local embedding rows used by later analysis.
+3. **Does fake mode test signal quality?** No. It tests data cutoff, pipeline mechanics, and report formatting without provider usage.
+
+## Overview
+
+```text
+Daily sources → events and daily summaries → local embeddings
+                                           ↓
+Current week + coverage + counts → prior-history retrieval → LLM proposals
+                                                          ↓
+                                           citation verification + code scoring
+                                                          ↓
+                                      saved weekly result and attempt history
+                                                          ↓
+                                      planned LangGraph narrator / dashboard
+```
+
+## Glossary
+
+- **Collection date:** Asia/Kolkata calendar date assigned to an event for daily and weekly grouping.
+- **Source date:** A date reported by the source itself; `date_basis=source`.
+- **First-observed date:** When RAVN first detected an otherwise undated listing; it does not mean the company published it then.
+- **Baseline event:** Initial snapshot evidence used to establish what already existed; excluded from weekly evidence and daily feed.
+- **Embedding:** A list of numbers representing event text so semantically related events can be retrieved.
+- **Retrieval:** Selecting similar events from earlier weeks for the current week's analysis.
+- **Citation verification:** Checking that every proposed event ID exists, belongs to the target and allowed time window, and matches the claimed source.
+- **Evidence score:** Code-calculated sum of per-source support states from 0 to 4; it is not a probability.
+- **Spike:** Verified citations include current-week support from at least two sources.
+- **Trend:** Verified citations span at least three distinct weeks.
+- **Run:** One attempt to analyze a target/week. A week can have multiple runs but only one latest successful result.
