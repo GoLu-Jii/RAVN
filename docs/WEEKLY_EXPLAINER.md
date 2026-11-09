@@ -98,6 +98,22 @@ The weekly detector is being built in milestones. These notes explain the pieces
 2. **What does a retry handle?** Only invalid JSON or schema output, up to two retries; provider failures are left to scheduler retry.
 3. **Can the model set confidence scores or spike/trend labels?** No. Those fields are not allowed in its schema and are computed by code later.
 
+## M8: Citation checks, scores, and labels
+
+**What it does:** Code checks every proposed citation before accepting a signal. It then computes the source score and labels the signal as a spike, trend, both, or isolated.
+
+**Why this design:** A valid JSON response can still cite an invented event or claim the wrong source. Database checks make the evidence auditable, while scores and labels remain deterministic instead of depending on model wording.
+
+**How it works:** Each cited ID must exist, belong to the target, be non-baseline, fall within the 12-week history plus current week, and come from a claimed source. At least one citation must be from the current week. Duplicate IDs are removed. Code recomputes sources and records mismatches, and derives whether any citation is first-observed. Invalid proposals go to the rejection list. For accepted signals, configured supported sources score 1, configured complete sources with no cited support score 0, configured partial/unavailable sources score 0.5, and unconfigured sources score 0 and are excluded from the configured count. A spike needs support from two current-week sources; a trend spans at least three distinct weeks.
+
+**Trade-offs:** A missing cited source causes rejection; an extra claimed source is recorded as a mismatch while the accepted source list is recomputed from evidence. The score is a 0–4 ranking value, not a probability.
+
+**Likely questions:**
+
+1. **Can the model inflate the score?** No. Scoring receives verified events and code-calculated source coverage, not model scores.
+2. **What happens to a fabricated citation?** The signal is rejected with a reason and can be retained in the run audit record.
+3. **How are spike and trend decided?** From verified citation dates and sources using fixed code rules.
+
 ## M3: Week windows, coverage, and counts
 
 **What it does:** The weekly foundation code identifies Monday-to-Sunday windows in Asia/Kolkata, calculates whether each source was checked, and counts non-baseline events for the current and preceding weeks.
