@@ -50,6 +50,22 @@ The weekly detector is being built in milestones. These notes explain the pieces
 2. **What happens if embedding fails?** Daily collection remains successful; missing embeddings can be retried by the next scheduled run or backfill command.
 3. **How do text changes refresh vectors?** A hash of the prepared text changes, so the existing event's embedding is updated.
 
+## M5: Similarity retrieval
+
+**What it does:** For each event this week, RAVN finds related events from the same target's preceding 12 weeks. It merges duplicate matches, counts matched events by week, and groups GitHub matches by repository and week.
+
+**Why this design:** A company may discuss a topic weeks before it hires or changes its code. Similarity can connect that history across a flexible time gap. Age is reported separately so a later stage can consider recency without hiding semantic matches.
+
+**How it works:** Current non-baseline events with embeddings become queries. RAVN uses one query for each current-week GitHub repository plus non-GitHub events, up to the configured query cap. Each query searches only earlier dates for the same target and matching model/preparation version. PostgreSQL orders candidates with pgvector cosine distance; SQLite uses exact Python cosine. Results are ranked by similarity alone, merged by event ID using the best similarity, and annotated with age in weeks and a two-week half-life weight. Per-week counts use distinct matched event IDs; GitHub matches are additionally grouped for compact display.
+
+**Trade-offs:** Exact search scans the eligible target history and is simple to reason about; a vector index can be added if measured data volumes require it. Current events without embeddings cannot serve as search queries until the next embedding pass. The default 12-week window intentionally does not search older history.
+
+**Likely questions:**
+
+1. **Does recency change which matches are selected?** No. Similarity ranks results; age weight is separate metadata.
+2. **Can one target retrieve another target's events?** No. Every search filters on the requested target ID.
+3. **Are PostgreSQL and local results consistent?** Both use exact cosine similarity; the live Supabase smoke test compares their ordering on the same fixture.
+
 ## M3: Week windows, coverage, and counts
 
 **What it does:** The weekly foundation code identifies Monday-to-Sunday windows in Asia/Kolkata, calculates whether each source was checked, and counts non-baseline events for the current and preceding weeks.

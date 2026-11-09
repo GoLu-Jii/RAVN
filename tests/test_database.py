@@ -1,6 +1,6 @@
 import os
 import unittest
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from uuid import uuid4
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
@@ -13,7 +13,10 @@ from app.db.database import create_database_engine
 from app.daily.collectors import collect_target_events
 from app.events.models import DailySourceCheckpoint, DailySourceSummary, Event, EventEmbedding
 from app.events.routes import get_daily_summaries, list_daily_events
+from app.embeddings.model import EMBEDDING_DIMENSION
 from app.targets.models import Target
+from app.weekly.retrieval import search_similar_events
+from app.weekly.windows import week_start_for
 
 
 class DatabaseEngineTests(unittest.TestCase):
@@ -127,6 +130,61 @@ class SupabasePostgresSmokeTests(unittest.TestCase):
             stored = session.query(EventEmbedding).filter_by(event_id=event.id).one()
             self.assertEqual(len(stored.embedding), 384)
             self.assertEqual(round(stored.embedding[0], 5), 1.0)
+
+            week_start = week_start_for(today)
+            historical = []
+            for index, values in enumerate(([1.0, 0.0], [0.8, 0.6]), start=1):
+                historical_day = week_start - timedelta(days=index)
+                historical_event = Event(
+                    target_id=target.id,
+                    source_type="github",
+                    source_key=f"retrieval-smoke-{uuid4()}",
+                    title="Commit in example/project",
+                    raw_content='{"repo":"example/project","message":"retrieval smoke"}',
+                    one_liner="retrieval smoke",
+                    collection_date=historical_day,
+                    event_date=datetime.combine(historical_day, datetime.min.time(), tzinfo=timezone.utc),
+                    is_baseline=False,
+                    date_basis="source",
+                )
+                session.add(historical_event)
+                session.flush()
+                session.add(EventEmbedding(
+                    event_id=historical_event.id,
+                    model_id="smoke-model",
+                    dimension=EMBEDDING_DIMENSION,
+                    prep_version="smoke-v1",
+                    text_hash=str(uuid4()).replace("-", "") * 2,
+                    embedding=values + [0.0] * (EMBEDDING_DIMENSION - len(values)),
+                ))
+                historical.append(historical_event)
+            session.commit()
+
+            query_vector = [1.0] + [0.0] * (EMBEDDING_DIMENSION - 1)
+            postgres_hits = search_similar_events(
+                session,
+                query_vector,
+                target_id=target.id,
+                week_start=week_start,
+                limit=10,
+                model_id="smoke-model",
+                prep_version="smoke-v1",
+                backend="postgresql",
+            )
+            python_hits = search_similar_events(
+                session,
+                query_vector,
+                target_id=target.id,
+                week_start=week_start,
+                limit=10,
+                model_id="smoke-model",
+                prep_version="smoke-v1",
+                backend="python",
+            )
+            self.assertEqual(
+                [hit["event_id"] for hit in postgres_hits],
+                [hit["event_id"] for hit in python_hits],
+            )
         finally:
             if target_id is not None:
                 session.query(DailySourceCheckpoint).filter_by(target_id=target_id).delete()
