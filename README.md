@@ -14,7 +14,7 @@ UNDER CONSTRUCTION
 | **Target Onboarding** | Completed | Dynamic URL normalization (accepts `stripe.com` or `https://stripe.com`), automated source link discovery & classification via LLM. |
 | **Kundali Builder (Day-0)** | Completed | Multi-channel ingestion across GitHub (repos, languages, 52-week cadence curve), ATS/careers (API + HTML scrapers), technical blogs (RSS + trafilatura HTML article extractor), and web/social snapshots. |
 | **LLM Strategic Dossier** | Completed | Kundali synthesis requests `openai/gpt-oss-120b`, routed to Groq first with Gemini and OpenRouter fallbacks; produces executive summary, strategic themes, cross-signal correlations, and predictive outlook. |
-| **Database Persistence** | Completed | SQLite (`ravn.db`) via SQLAlchemy and Alembic. Stores users, targets, Kundali profiles, daily events, source checkpoints, and per-date source summaries. |
+| **Database Persistence** | Completed | SQLAlchemy and Alembic support SQLite for tests and the existing Supabase PostgreSQL database for the app. Stores users, targets, Kundali profiles, daily events, source checkpoints, and per-date source summaries; PostgreSQL has pgvector enabled for the weekly stage. |
 | **REST API** | Completed | FastAPI endpoints for onboarding and Kundali, plus daily collection, dated source highlights, event feed/detail, and saved summary dates (`/targets/{id}/daily/collect`, `/targets/{id}/daily/summaries`, `/targets/{id}/daily/summaries/dates`, `/targets/{id}/daily/events`). |
 | **Daily Collector** | Completed | Collects source-dated items for a requested Asia/Kolkata date, uses first-observed dates for new undated current-day ATS/blog listings, and checks recent missing or fully failed dates in background catch-up after startup; scheduled at 11:59 PM IST. |
 | **Weekly Signal Detector, Narrator & PDF Export** | Planned | Weekly analysis, digest generation, and PDF export remain future phases; weekly tables and jobs are not implemented. |
@@ -25,7 +25,7 @@ UNDER CONSTRUCTION
 
 ### 1. Environment Setup
 
-Create a `.env` file in the project root:
+Copy `.env.example` to `.env` and set the credentials you use:
 
 ```env
 DATABASE_URL=sqlite:///./ravn.db
@@ -44,11 +44,15 @@ pip install -r requirements.txt
 
 ### 2. Database Migrations
 
-Apply Alembic migrations to set up the SQLite database:
+By default, Alembic creates or updates the local SQLite database:
 
 ```bash
 alembic upgrade head
 ```
+
+To use the existing Supabase PostgreSQL database instead, set `DATABASE_URL` in `.env` to the connection string from Supabase's **Connect** panel. URL-encode special characters in the database password. The same setting selects the database for the app and Alembic; tests create their own SQLite databases. Migrations create the RAVN tables in the empty `public` schema and enable pgvector in `extensions`. Keep the actual connection string out of source control.
+
+To transfer the current SQLite data, first make a separate copy of `ravn.db` and run the SQLite migrations on that copy. Then run `python scripts/migrate_sqlite_to_postgres.py --source-db <path-to-migrated-copy>`. The script refuses to copy into non-empty PostgreSQL tables, preserves row IDs, advances sequences, and prints table counts. It never edits the original SQLite file.
 
 ### 3. Start Development Server
 
