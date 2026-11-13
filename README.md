@@ -145,6 +145,7 @@ RAVN includes offline automated `unittest` suites for daily collection and weekl
 
 ## Architecture Documentation
 
+- [docs/WEEKLY_DETECTOR_PLAN.md](docs/WEEKLY_DETECTOR_PLAN.md) — Planning contract for the simplified weekly lead extraction and lead-vector storage flow; not yet implemented.
 - [docs/SYSTEM_DESIGN.md](docs/SYSTEM_DESIGN.md) — End-to-end system architecture, runtime flows, database design, and Mermaid diagrams.
 - [docs/IMPLEMENTATION_GUIDE.md](docs/IMPLEMENTATION_GUIDE.md) — Technical stack, folder layout, data models, and component flow.
 - [docs/PROGRESS.md](docs/PROGRESS.md) — Chronological progress tracker of completed and tested modules.
