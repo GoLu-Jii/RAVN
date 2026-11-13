@@ -8,6 +8,17 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+def normalize_voyage_endpoint(value: str) -> str:
+    value = value.strip().rstrip("/")
+    if not value.startswith(("https://", "http://")):
+        value = "https://" + value
+    if value.endswith("/v1"):
+        return value + "/embeddings"
+    if not value.endswith("/embeddings"):
+        return value + "/v1/embeddings"
+    return value
+
+
 @dataclass(frozen=True)
 class WeeklyConfig:
     week_start: str = "monday"
@@ -27,8 +38,9 @@ class WeeklyConfig:
     unverified_threshold: float = 0.20
     trend_min_weeks: int = 3
     weekly_llm_model: str = "openai/gpt-oss-120b"
-    embed_model_id: str = "BAAI/bge-small-en-v1.5"
-    prep_version: str = "v1"
+    embed_model_id: str = "voyage-4-lite"
+    prep_version: str = "voyage-document-v1"
+    voyage_endpoint: str = "https://ai.mongodb.com/v1/embeddings"
     retry_attempts: int = 6
 
     def __post_init__(self) -> None:
@@ -54,6 +66,8 @@ class WeeklyConfig:
         values = {}
         for field in fields(cls):
             raw = source.get(f"RAVN_WEEKLY_{field.name.upper()}")
+            if field.name == "voyage_endpoint" and raw is None:
+                raw = source.get("VOYAGE_EMBEDDING_PROVIDER_ENDPOINT") or source.get("ENDPOINT")
             if raw is None:
                 continue
             default = field.default
@@ -67,6 +81,8 @@ class WeeklyConfig:
                 values[field.name] = float(raw)
             else:
                 values[field.name] = raw.strip()
+                if field.name == "voyage_endpoint":
+                    values[field.name] = normalize_voyage_endpoint(values[field.name])
         return cls(**values)
 
 

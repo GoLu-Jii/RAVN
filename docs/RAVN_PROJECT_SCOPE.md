@@ -98,7 +98,7 @@ Every day, RAVN logs new activity from the target's footprint.
 
 ### Stage 3 — Weekly: The Signal Report
 
-The backend weekly detector is implemented. It runs Monday at 03:00 Asia/Kolkata for the Monday–Sunday week that just closed, and it can also be run manually for any closed or historical Monday-start week. It compiles the week's events and collection coverage, retrieves related history from up to 12 earlier weeks with local embeddings, asks the configured Groq model for structured signal proposals, verifies every citation against stored events, computes source support scores, and saves the result.
+The backend weekly detector is implemented. It runs Monday at 03:00 Asia/Kolkata for the Monday–Sunday week that just closed, and it can also be run manually for any closed or historical Monday-start week. It compiles the week's events and collection coverage, retrieves related history from up to 12 earlier weeks using hosted Voyage embeddings stored in pgvector, asks the configured Groq model for structured signal proposals, verifies every citation against stored events, computes source support scores, and saves the result.
 
 The LLM proposes explanations and event citations; ordinary code checks evidence and derives labels. A **spike** requires cited current-week events from at least two sources. A **trend** requires citations across at least three distinct weeks. Each configured source contributes 1 when supported, 0 when completely checked with no support, or 0.5 when collection is partial or unavailable. The total is a 0–4 evidence score, not a probability. First-observed dates remain labeled as observations, and the Kundali is passed separately as undated background context.
 

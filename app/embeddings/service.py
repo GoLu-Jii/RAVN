@@ -2,10 +2,18 @@
 import hashlib
 import logging
 from collections.abc import Callable
+from math import isfinite
 
+from sqlalchemy import inspect
+from sqlalchemy.exc import NoSuchTableError
 from sqlalchemy.orm import Session
 
-from app.embeddings.model import EMBEDDING_DIMENSION, embed_texts
+from app.embeddings.model import (
+    EMBEDDING_DIMENSION,
+    EmbeddingProviderError,
+    embed_texts,
+    split_embedding_batches,
+)
 from app.embeddings.text import PREP_VERSION, build_embedding_text
 from app.events.models import Event, EventEmbedding
 from app.weekly.config import WEEKLY_CONFIG
@@ -13,6 +21,40 @@ from app.weekly.config import WEEKLY_CONFIG
 
 logger = logging.getLogger(__name__)
 EmbeddingFunction = Callable[[list[str]], list[list[float]]]
+
+
+class EmbeddingSchemaError(RuntimeError):
+    """The database vector column does not match the hosted model output."""
+
+
+def _validate_storage_schema(db: Session) -> None:
+    bind = db.get_bind()
+    if bind.dialect.name != "postgresql":
+        return
+
+    try:
+        columns = inspect(bind).get_columns(EventEmbedding.__tablename__)
+    except NoSuchTableError as exc:
+        raise EmbeddingSchemaError(
+            "The event_embeddings table is missing; run `python -m alembic upgrade head`."
+        ) from exc
+
+    embedding_column = next(
+        (column for column in columns if column["name"] == "embedding"),
+        None,
+    )
+    dimension = (
+        getattr(embedding_column["type"], "dim", None)
+        if embedding_column is not None
+        else None
+    )
+    if dimension != EMBEDDING_DIMENSION:
+        actual = f"vector({dimension})" if dimension is not None else "an unknown type"
+        raise EmbeddingSchemaError(
+            f"PostgreSQL event_embeddings.embedding is {actual}; this app requires "
+            f"vector({EMBEDDING_DIMENSION}). Run `python -m alembic upgrade head` "
+            "against the same database before retrying."
+        )
 
 
 def embed_missing_events(
@@ -33,6 +75,7 @@ def embed_missing_events(
     already_current = 0
 
     try:
+        _validate_storage_schema(db)
         query = db.query(Event).filter(Event.is_baseline.is_(False))
         if target_id is not None:
             query = query.filter(Event.target_id == target_id)
@@ -63,15 +106,23 @@ def embed_missing_events(
                 "pending": 0,
             }
 
-        for batch_number, start in enumerate(range(0, total_pending, batch_size), start=1):
-            batch = pending[start:start + batch_size]
+        text_batches = split_embedding_batches(
+            [item[1] for item in pending],
+            max_items=batch_size,
+        )
+        pending_offset = 0
+        for batch_number, text_batch in enumerate(text_batches, start=1):
+            batch = pending[pending_offset:pending_offset + len(text_batch)]
+            pending_offset += len(text_batch)
             try:
-                vectors = embedder([item[1] for item in batch])
+                vectors = embedder(text_batch)
                 if len(vectors) != len(batch):
                     raise ValueError("Embedder returned a different number of vectors than inputs.")
-                for (event, _text, text_hash, row), vector in zip(batch, vectors):
+                for (event, _, text_hash, row), vector in zip(batch, vectors):
                     if len(vector) != EMBEDDING_DIMENSION:
                         raise ValueError(f"Expected {EMBEDDING_DIMENSION}-dimensional vectors.")
+                    if not all(isfinite(value) for value in vector):
+                        raise ValueError("Embedder returned non-finite embedding values.")
                     if row is None:
                         row = EventEmbedding(
                             event_id=event.id,
@@ -97,7 +148,7 @@ def embed_missing_events(
             except Exception as exc:
                 db.rollback()
                 logger.exception("Embedding batch %s failed", batch_number)
-                return {
+                report = {
                     "status": "partial" if embedded else "failed",
                     "target_id": target_id,
                     "total_events": len(events),
@@ -106,6 +157,10 @@ def embed_missing_events(
                     "pending": total_pending - embedded,
                     "error_type": type(exc).__name__,
                 }
+                if isinstance(exc, EmbeddingProviderError):
+                    report["error_message"] = str(exc)
+                    report["retryable"] = exc.retryable
+                return report
 
         return {
             "status": "success",
@@ -114,6 +169,29 @@ def embed_missing_events(
             "embedded": embedded,
             "already_current": already_current,
             "pending": 0,
+        }
+    except EmbeddingSchemaError as exc:
+        db.rollback()
+        logger.error("Embedding storage schema check failed: %s", exc)
+        return {
+            "status": "failed",
+            "target_id": target_id,
+            "embedded": embedded,
+            "already_current": already_current,
+            "error_type": type(exc).__name__,
+            "error_message": str(exc),
+        }
+    except EmbeddingProviderError as exc:
+        db.rollback()
+        logger.exception("Could not prepare event embeddings")
+        return {
+            "status": "failed",
+            "target_id": target_id,
+            "embedded": embedded,
+            "already_current": already_current,
+            "error_type": type(exc).__name__,
+            "error_message": str(exc),
+            "retryable": exc.retryable,
         }
     except Exception as exc:
         db.rollback()

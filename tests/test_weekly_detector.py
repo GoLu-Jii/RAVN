@@ -1,6 +1,5 @@
 import unittest
 from datetime import date, datetime, timezone
-from types import SimpleNamespace
 from unittest.mock import patch
 
 from sqlalchemy import create_engine
@@ -185,6 +184,46 @@ class WeeklyDetectorTests(unittest.TestCase):
         builder.assert_not_called()
         self.assertEqual(result["status"], "failed")
         self.assertTrue(result["retryable"])
+
+    def test_embedding_schema_failure_is_not_retried_and_is_actionable(self):
+        with patch(
+            "app.weekly.detector.embed_missing_events",
+            return_value={
+                "status": "failed",
+                "error_type": "EmbeddingSchemaError",
+                "error_message": "Run `python -m alembic upgrade head` before retrying.",
+            },
+        ), patch("app.weekly.detector.build_weekly_input") as builder:
+            result = run_weekly_analysis(
+                self.session,
+                target_id=self.target.id,
+                week_start=WEEK_START,
+            )
+        builder.assert_not_called()
+        self.assertEqual(result["status"], "failed")
+        self.assertFalse(result["retryable"])
+        self.assertIn("alembic upgrade head", result["error"])
+
+    def test_embedding_provider_failure_surfaces_actionable_error(self):
+        with patch(
+            "app.weekly.detector.embed_missing_events",
+            return_value={
+                "status": "failed",
+                "error_type": "EmbeddingProviderError",
+                "error_message": "Voyage embeddings request failed with HTTP 401; check VOYAGE_API_KEY.",
+                "retryable": False,
+            },
+        ), patch("app.weekly.detector.build_weekly_input") as builder:
+            result = run_weekly_analysis(
+                self.session,
+                target_id=self.target.id,
+                week_start=WEEK_START,
+            )
+        builder.assert_not_called()
+        self.assertEqual(result["status"], "failed")
+        self.assertFalse(result["retryable"])
+        self.assertIn("HTTP 401", result["error"])
+        self.assertIn("VOYAGE_API_KEY", result["error"])
 
     def test_rerunning_week_replaces_result_and_accumulates_runs(self):
         first, _ = self.run_with(llm_result=llm_output([], "First"))

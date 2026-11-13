@@ -7,7 +7,6 @@ sqlalchemy
 alembic
 psycopg2-binary==2.9.12
 pgvector==0.5.1
-sentence-transformers==6.2.0
 
 # Auth
 bcrypt

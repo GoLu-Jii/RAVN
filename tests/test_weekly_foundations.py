@@ -88,7 +88,8 @@ class WeeklyConfigTests(unittest.TestCase):
         self.assertEqual(config.half_life_weeks, 2.0)
         self.assertEqual(config.schedule_hour, 3)
         self.assertEqual(config.weekly_llm_model, "openai/gpt-oss-120b")
-        self.assertEqual(config.embed_model_id, "BAAI/bge-small-en-v1.5")
+        self.assertEqual(config.embed_model_id, "voyage-4-lite")
+        self.assertEqual(config.voyage_endpoint, "https://ai.mongodb.com/v1/embeddings")
         self.assertEqual(config.unverified_threshold, 0.20)
 
     def test_environment_values_override_defaults(self):
@@ -97,11 +98,13 @@ class WeeklyConfigTests(unittest.TestCase):
             "RAVN_WEEKLY_UNVERIFIED_THRESHOLD": "0.25",
             "RAVN_WEEKLY_MIN_SIMILARITY": "0.72",
             "RAVN_WEEKLY_WEEKLY_LLM_MODEL": "test/model",
+            "ENDPOINT": "ai.mongodb.com/v1/embeddings",
         })
         self.assertEqual(config.history_weeks, 6)
         self.assertEqual(config.unverified_threshold, 0.25)
         self.assertEqual(config.min_similarity, 0.72)
         self.assertEqual(config.weekly_llm_model, "test/model")
+        self.assertEqual(config.voyage_endpoint, "https://ai.mongodb.com/v1/embeddings")
 
     def test_invalid_threshold_and_non_monday_start_are_rejected(self):
         with self.assertRaises(ValueError):

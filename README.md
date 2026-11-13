@@ -17,7 +17,7 @@ UNDER CONSTRUCTION
 | **Database Persistence** | Completed | SQLAlchemy and Alembic support SQLite for tests and the existing Supabase PostgreSQL database for the app. Stores users, targets, Kundali profiles, daily events/summaries, versioned event embeddings, and weekly run/result/signal records; PostgreSQL uses pgvector for weekly retrieval. |
 | **REST API** | Completed | FastAPI endpoints for onboarding and Kundali, plus daily collection, dated source highlights, event feed/detail, and saved summary dates (`/targets/{id}/daily/collect`, `/targets/{id}/daily/summaries`, `/targets/{id}/daily/summaries/dates`, `/targets/{id}/daily/events`). |
 | **Daily Collector** | Completed | Collects source-dated items for a requested Asia/Kolkata date, uses first-observed dates for new undated current-day ATS/blog listings, and checks recent missing or fully failed dates in background catch-up after startup; scheduled at 11:59 PM IST. |
-| **Weekly Signal Detector** | Completed | Scheduled and manual weekly analysis, local embeddings, pgvector retrieval, structured signal proposals, code-verified citations/scores/labels, storage, APIs, and replay harness. |
+| **Weekly Signal Detector** | Completed | Scheduled and manual weekly analysis, hosted Voyage embeddings, pgvector retrieval, structured signal proposals, code-verified citations/scores/labels, storage, APIs, and replay harness. |
 | **Weekly Narrator & PDF Export** | Planned | LangGraph narrative workflow, user-facing digest, and on-demand PDF export are future phases. |
 
 ---
@@ -35,6 +35,9 @@ GITHUB_TOKEN=your-github-token-optional
 GROQ_API_KEY=your-groq-key
 GEMINI_API_KEY=your-gemini-key
 OPENROUTER_API_KEY=your-openrouter-key-optional
+VOYAGE_API_KEY=your-atlas-model-api-key
+# Optional; accepts your existing ENDPOINT variable too.
+VOYAGE_EMBEDDING_PROVIDER_ENDPOINT=https://ai.mongodb.com/v1/embeddings
 ```
 
 Install dependencies:
@@ -75,7 +78,7 @@ RAVN includes offline automated `unittest` suites for daily collection and weekl
   ```bash
   python -m unittest tests.test_embeddings -v
   ```
-  Uses fake vectors by default, so it does not download a model. The local model is loaded only when an event needs embedding; its first use downloads `BAAI/bge-small-en-v1.5` (384 dimensions) to the machine's model cache. To backfill stored non-baseline events, run `python scripts/embed_backfill.py` or scope it with `--target <id>`. The process resumes by skipping embeddings whose prepared text has not changed. Set `RAVN_TEST_REAL_EMBEDDINGS=1` to opt into the semantic similarity check, which loads the model.
+  Uses mocked HTTP responses by default and never contacts MongoDB. The app uses the hosted `voyage-4-lite` API with 256-dimensional vectors; configure `VOYAGE_API_KEY`. To backfill stored non-baseline events, run `python scripts/embed_backfill.py` or scope it with `--target <id>`. The process resumes by skipping embeddings whose prepared text has not changed. Set `RAVN_TEST_REAL_EMBEDDINGS=1` to opt into a live semantic check that uses your Voyage key and quota.
 
 - **Weekly retrieval tests**:
   ```bash
@@ -142,6 +145,7 @@ RAVN includes offline automated `unittest` suites for daily collection and weekl
 
 ## Architecture Documentation
 
+- [docs/SYSTEM_DESIGN.md](docs/SYSTEM_DESIGN.md) — End-to-end system architecture, runtime flows, database design, and Mermaid diagrams.
 - [docs/IMPLEMENTATION_GUIDE.md](docs/IMPLEMENTATION_GUIDE.md) — Technical stack, folder layout, data models, and component flow.
 - [docs/PROGRESS.md](docs/PROGRESS.md) — Chronological progress tracker of completed and tested modules.
 - [docs/COMPONENTS.md](docs/COMPONENTS.md) — Specification and data contracts for all 9 platform components.

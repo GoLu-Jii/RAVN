@@ -123,14 +123,14 @@ class SupabasePostgresSmokeTests(unittest.TestCase):
             session.add(EventEmbedding(
                 event_id=event.id,
                 model_id="smoke-model",
-                dimension=384,
+                dimension=EMBEDDING_DIMENSION,
                 prep_version="smoke-v1",
                 text_hash="0" * 64,
                 embedding=vector,
             ))
             session.commit()
             stored = session.query(EventEmbedding).filter_by(event_id=event.id).one()
-            self.assertEqual(len(stored.embedding), 384)
+            self.assertEqual(len(stored.embedding), EMBEDDING_DIMENSION)
             self.assertEqual(round(stored.embedding[0], 5), 1.0)
 
             week_start = week_start_for(today)

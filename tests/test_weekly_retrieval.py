@@ -10,6 +10,7 @@ from app.db.base import Base
 from app.embeddings.model import EMBEDDING_DIMENSION
 from app.events.models import Event, EventEmbedding
 from app.targets.models import Target
+from app.weekly.config import WEEKLY_CONFIG
 from app.weekly.retrieval import retrieve_history, search_similar_events
 
 
@@ -59,8 +60,8 @@ class WeeklyRetrievalTests(unittest.TestCase):
         key=None,
         repo="org/repo",
         date_basis="source",
-        model_id="BAAI/bge-small-en-v1.5",
-        prep_version="v1",
+        model_id="voyage-4-lite",
+        prep_version=WEEKLY_CONFIG.prep_version,
     ):
         event = Event(
             target_id=target_id or self.target.id,

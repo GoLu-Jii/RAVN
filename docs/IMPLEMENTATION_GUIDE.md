@@ -11,7 +11,7 @@ app/
   kundali/       Day 0 collection, profile model, LLM dossier synthesis
   daily/         daily collector and GitHub/ATS/blog/web-social fetchers
   events/        event/source-summary models and daily APIs
-  embeddings/    local embedding model, text preparation, persistence service
+  embeddings/    hosted embedding client, text preparation, persistence service
   weekly/        config, windows, coverage, counts, retrieval, input, LLM,
                  verification, scoring, persistence, replay, routes, detector
   scheduler/     daily and weekly APScheduler jobs plus recovery/retries
@@ -30,18 +30,20 @@ scripts/         migration, embedding backfill, input inspection, weekly replay
 | Language/API | Python 3.11, FastAPI |
 | Persistence | SQLAlchemy, Alembic; SQLite supported, current deployment uses the existing Supabase PostgreSQL database |
 | Vector search | pgvector on PostgreSQL; exact Python cosine search for SQLite/tests |
-| Embeddings | Local `BAAI/bge-small-en-v1.5`, 384 dimensions, sentence-transformers; no embedding API |
+| Embeddings | MongoDB Atlas-hosted Voyage `voyage-4-lite`, 256 dimensions, via the REST API |
 | Weekly LLM | Pinned `openai/gpt-oss-120b` through the existing Groq client, provider fallback disabled for weekly calls |
 | Other LLM calls | Kundali synthesis and onboarding use the existing multi-provider routing/fallback behavior |
 | Scheduling | In-process APScheduler with Asia/Kolkata timezone |
 | Collection | httpx, BeautifulSoup, feedparser, trafilatura; source-specific public APIs where available |
 | Tests | Python `unittest`; offline tests use fakes, optional live database/model checks are opt-in |
 
-The project owner uses an existing free-tier Supabase project because Docker is unavailable. No second cloud service is required. `DATABASE_URL` selects the same database for the app and Alembic; never commit the URL. SQLite remains usable for local development and all unit tests. The scheduler uses an in-memory job store and a process-local lock, so only one application process should own scheduled jobs unless deployment-level coordination is added.
+The project owner uses an existing free-tier Supabase project because Docker is unavailable. Voyage supplies hosted embedding inference; Supabase remains the relational/vector database. `DATABASE_URL` selects Supabase for the app and Alembic; never commit the URL. SQLite remains usable for local development and all unit tests. Voyage's current free allocation is quota-limited and shared at the Atlas organization level; usage beyond the remaining free allocation may be billed. The scheduler uses an in-memory job store and a process-local lock, so only one application process should own scheduled jobs unless deployment-level coordination is added.
 
 ## Configuration
 
 Generic settings include `DATABASE_URL`, `JWT_SECRET_KEY`, optional `GITHUB_TOKEN`, and provider keys such as `GROQ_API_KEY`. Weekly settings are read from environment variables named `RAVN_WEEKLY_<FIELD>`; defaults are defined in `app/weekly/config.py`.
+
+The Voyage client is paced for the free tier without a payment method: at most 3 requests and 10,000 estimated tokens per rolling minute. It splits inputs into requests capped at 8,000 estimated tokens and 64 items, then adjusts reservations using provider-reported token usage when available. Estimation uses UTF-8 bytes plus fixed overhead instead of a local tokenizer, so it is approximate. Pacing is process-local; multiple application processes or other clients using the same API key are not coordinated. Persistent HTTP 429 responses can indicate account quota exhaustion or a different organization limit; check the Atlas dashboard.
 
 | Variable | Default | Purpose |
 |---|---:|---|
@@ -59,11 +61,17 @@ Generic settings include `DATABASE_URL`, `JWT_SECRET_KEY`, optional `GITHUB_TOKE
 | `RAVN_WEEKLY_UNVERIFIED_THRESHOLD` | `0.20` | ATS/blog missed-candidate share marking coverage partial |
 | `RAVN_WEEKLY_TREND_MIN_WEEKS` | `3` | Distinct citation weeks required for a trend label |
 | `RAVN_WEEKLY_WEEKLY_LLM_MODEL` | `openai/gpt-oss-120b` | Pinned weekly model (field name: `weekly_llm_model`) |
-| `RAVN_WEEKLY_EMBED_MODEL_ID` | `BAAI/bge-small-en-v1.5` | Local embedding model identifier |
-| `RAVN_WEEKLY_PREP_VERSION` | `v1` | Version of event text preparation |
+| `RAVN_WEEKLY_EMBED_MODEL_ID` | `voyage-4-lite` | Voyage model identifier |
+| `RAVN_WEEKLY_PREP_VERSION` | `voyage-document-v1` | Version of source text and document-mode embedding preparation |
+| `VOYAGE_API_KEY` | required for embeddings | MongoDB Atlas model API key, sent as a Bearer token |
+| `VOYAGE_EMBEDDING_PROVIDER_ENDPOINT` | `https://ai.mongodb.com/v1/embeddings` | Optional Atlas endpoint override; existing `ENDPOINT` is accepted as an alias |
 | `RAVN_WEEKLY_RETRY_ATTEMPTS` | `6` | Scheduled retries after retryable failure |
 
-The environment variable prefix is `RAVN_WEEKLY_` followed by the configuration field name uppercased (for example `RAVN_WEEKLY_WEEKLY_LLM_MODEL`). The Groq key is the existing `GROQ_API_KEY`. The replay command uses a fake no-signal client by default; `--live` explicitly enables the provider call.
+The environment variable prefix is `RAVN_WEEKLY_` followed by the configuration field name uppercased (for example `RAVN_WEEKLY_WEEKLY_LLM_MODEL`). `MONGODB_URI`, `MONGODB_USERNAME`, and `MONGODB_PASSWORD` are not used for embedding calls; the model API key authenticates directly with Atlas's embeddings endpoint. `DATABASE_URL` continues to point to Supabase. The replay command uses a fake no-signal LLM by default, but still calls Voyage when it needs to create embeddings; `--live` additionally enables the Groq model call.
+
+Before any PostgreSQL embedding work, RAVN checks that `event_embeddings.embedding` is `vector(256)`. If the table or dimension does not match, embedding stops before calling Voyage and weekly runs report a non-retryable, actionable schema error. Apply `python -m alembic upgrade head` to the same database selected by `DATABASE_URL`; the 384-to-256 migration removes incompatible derived vectors but preserves event records. Missing vectors are recreated through the hosted Voyage API as needed. SQLite tests skip this PostgreSQL-specific preflight.
+
+Voyage requests authenticate with `Authorization: Bearer <VOYAGE_API_KEY>`. Provider errors are returned without response bodies or credentials: 401/403 indicate a key or permission issue, 429 indicates a possible rate/quota limit, and network/429/5xx errors are retryable.
 
 ## Daily Collection
 
@@ -102,7 +110,7 @@ All routes require authentication and enforce target ownership:
 ### Replay and inspection
 
 - `python scripts/build_weekly_input.py --target N --week YYYY-MM-DD` prints an assembled input.
-- `python scripts/replay_weekly.py --target N --weeks K` replays the most recent closed weeks and writes a Markdown report. The default fake LLM is not a quality evaluator; it checks pipeline/report mechanics without a provider call. `--live` uses the configured Groq model. Replay applies a week-end cutoff to events, summaries, and Kundali snapshots and does not write weekly run/result rows. It may persist missing local embeddings.
+- `python scripts/replay_weekly.py --target N --weeks K` replays the most recent closed weeks and writes a Markdown report. The default fake LLM is not a quality evaluator; it checks pipeline/report mechanics without an LLM call. `--live` uses the configured Groq model. Replay applies a week-end cutoff to events, summaries, and Kundali snapshots and does not write weekly run/result rows. It may call the hosted Voyage API and persist missing vectors.
 - `python scripts/embed_backfill.py --target N` resumes embedding backfill in batches.
 
 ## Data Model Summary
@@ -114,15 +122,15 @@ All routes require authentication and enforce target ownership:
 | `events` | Unified source event store; includes collection date, source event time, baseline flag, tags, and date basis |
 | `daily_source_checkpoints` | Per-source collection state and first-snapshot markers |
 | `daily_source_summaries` | Per-target/date/source status, highlight, counts, and ATS/blog coverage breakdown |
-| `event_embeddings` | Versioned 384-dimensional vector per event/model/preparation version |
+| `event_embeddings` | Versioned 256-dimensional Voyage vector per event/model/preparation version |
 | `weekly_runs` | Every attempt, status/retry metadata, models, tokens, input/output, and rejection audit |
 | `weekly_results` | Latest successful result and exact counts per target/week |
 | `weekly_signals` | Verified signal descriptions, citations, scores, source states, labels, and claim audit |
 
-Alembic manages schema changes. PostgreSQL is the active cloud database configured in the owner's ignored `.env`; SQLite migrations are also kept working and exercised on temporary copies. Never run destructive migration or data-copy commands against the original local `ravn.db`.
+Alembic manages schema changes. PostgreSQL is the active cloud database configured in the owner's ignored `.env`; SQLite migrations are also kept working and exercised on temporary copies. Apply `python -m alembic upgrade head` to the same database used by the app before deploying the 256-dimensional hosted Voyage embeddings. The transition migration deletes only incompatible derived vectors; events remain and are re-embedded on demand. Never run destructive migration or data-copy commands against the original local `ravn.db`.
 
 ## Tests and Operational Limits
 
-Run the offline suite with `python -m unittest discover -s tests -v`; it uses SQLite and fakes and does not call external APIs or download the embedding model. Optional live Supabase and real-model checks are explicitly gated. Use `python -m compileall app scripts` for a syntax pass.
+Run the offline suite with `python -m unittest discover -s tests -v`; it uses SQLite and fakes and does not call external APIs or download a local embedding model. Optional live Supabase and hosted-model checks are explicitly gated. Use `python -m compileall app scripts` for a syntax pass.
 
 The in-process scheduler is not a distributed scheduler, the weekly model may be unavailable or rate-limited on its free tier, historical source dates may be incomplete, semantic embeddings are not topic tags, and the LLM may propose weak correlations that citation verification cannot judge semantically. The planned narrator may improve explanation, but it is not implemented here.

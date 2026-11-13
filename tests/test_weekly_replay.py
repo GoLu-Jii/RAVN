@@ -7,6 +7,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.auth.models import User
 from app.db.base import Base
+from app.embeddings.model import EMBEDDING_DIMENSION
 from app.events.models import Event
 from app.kundali.models import Kundali
 from app.targets.models import Target
@@ -61,7 +62,7 @@ class WeeklyReplayTests(unittest.TestCase):
     def fake_embedder(texts):
         vectors = []
         for text in texts:
-            vector = [0.0] * 384
+            vector = [0.0] * EMBEDDING_DIMENSION
             vector[0 if "current" in text.lower() else 1] = 1.0
             vectors.append(vector)
         return vectors

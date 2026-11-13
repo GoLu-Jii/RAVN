@@ -5,7 +5,8 @@ from threading import Lock
 
 from sqlalchemy.orm import Session
 
-from app.embeddings.service import embed_missing_events
+from app.embeddings.model import EmbeddingProviderError
+from app.embeddings.service import EmbeddingSchemaError, embed_missing_events
 from app.events.models import Event
 from app.weekly.config import WEEKLY_CONFIG, WeeklyConfig
 from app.weekly.input_builder import WeeklyInputError, build_weekly_input
@@ -53,7 +54,18 @@ def _failure_response(db: Session, run: WeeklyRun, exc: Exception, weekly_input:
         if exc.model:
             run.llm_model = exc.model
     else:
-        retryable = not isinstance(exc, (WeeklyInputError, ValueError, TypeError))
+        retryable = not isinstance(
+            exc,
+            (
+                EmbeddingProviderError,
+                EmbeddingSchemaError,
+                WeeklyInputError,
+                ValueError,
+                TypeError,
+            ),
+        )
+        if isinstance(exc, EmbeddingProviderError):
+            retryable = exc.retryable
         raw_output = None
     fail_run(
         db,
@@ -104,8 +116,19 @@ def run_weekly_analysis(
         try:
             embedding_report = embed_missing_events(db, target_id=target_id, embedder=embedder)
             if embedding_report["status"] in {"failed", "partial"}:
+                error_message = (
+                    embedding_report.get("error_message")
+                    or embedding_report.get("error_type", "unknown error")
+                )
+                if embedding_report.get("error_type") == EmbeddingSchemaError.__name__:
+                    raise EmbeddingSchemaError(error_message)
+                if embedding_report.get("error_type") == EmbeddingProviderError.__name__:
+                    raise EmbeddingProviderError(
+                        error_message,
+                        retryable=embedding_report.get("retryable", False),
+                    )
                 raise RuntimeError(
-                    f"Embedding step {embedding_report['status']}: {embedding_report.get('error_type', 'unknown error')}"
+                    f"Embedding step {embedding_report['status']}: {error_message}"
                 )
 
             weekly_input = build_weekly_input(
