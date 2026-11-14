@@ -2,7 +2,7 @@
 
 **Tagline:** watch-it
 
-This document describes the intended product scope, not a checklist of completed code. See `PROGRESS.md` and `IMPLEMENTATION_GUIDE.md` for implementation status; the weekly pipeline, dashboard, PDF export, and full target deletion remain planned.
+This document describes intended product scope and the current boundary between implemented and planned work. See `PROGRESS.md` and `IMPLEMENTATION_GUIDE.md` for implementation detail. The Weekly Lead Detector and baseline Signal Detector are implemented; the dashboard, narrated digest, PDF export, and full target deletion remain planned.
 
 ---
 
@@ -67,9 +67,9 @@ This keeps onboarding effortless for the common case, while ensuring RAVN never 
 ## 6. The Three-Stage Intelligence Cadence
 
 ```
-  DAY 0: Onboarding             DAILY: The Radar             WEEKLY: The Digest
+  DAY 0: Onboarding             DAILY: The Radar             WEEKLY: Lead Extraction
 ┌────────────────────┐       ┌───────────────────────┐     ┌────────────────────────┐
-│   TARGET KUNDALI   │  ──>  │ Detailed Event Store  │ ──> │ Weekly Synthesis       │
+│   TARGET KUNDALI   │  ──>  │ Detailed Event Store  │  ──> │ Weekly Lead Set        │
 │ (max available      │       │ (Full detail stored + │     │ (Correlates the week's │
 │  historical context)│       │  one-liner UI feed)   │     │  events into strategy) │
 └────────────────────┘       └───────────────────────┘     └────────────────────────┘
@@ -91,27 +91,24 @@ When a target is added, RAVN immediately builds an initial profile — the **Tar
 
 Every day, RAVN logs new activity from the target's footprint.
 
-- **Storage layer (full detail):** everything is stored in full — complete commit messages and dependency changes, full job posting text, full blog post text.
+- **Storage layer (full detail):** collected commits, dated job/blog items, current-day first-observed ATS/blog items, and web/social changes are stored with their available source content. Pull requests and dependency changes remain planned.
 - **Presentation layer (UI):** the dashboard shows a clean, skimmable **one-liner per event**, so a daily check takes seconds, not minutes.
 - **Drilldown:** clicking any one-liner expands to show the full underlying detail.
 - Daily events are **not ranked or filtered** — everything is logged, chronologically, with no daily-level judgment call about what "matters." That judgment is reserved entirely for the weekly stage (see below), so RAVN only needs one place where real intelligence/prioritization happens.
 
-### Stage 3 — Weekly: The Digest
+### Stage 3 — Weekly: Lead Extraction
 
-Once a week, RAVN synthesizes the full week of detailed events (not just the one-liners) into an executive-level briefing.
+The baseline Weekly Lead Detector runs Monday at 02:00 Asia/Kolkata for the Monday–Sunday week that just closed, and it can also be run manually for any Monday-start week. It selects only non-baseline events by their `collection_date`, sends the complete selected-week event snapshot to the configured LLM, validates every cited source event ID, embeds each lead's title and description, and stores the vectors with the Monday week date and source IDs.
 
-**How correlation works (hybrid approach):**
-1. **Signal detection (rule-based, planned):** a tagging step must assign product/topic categories to events (e.g. a repo by its topic area, a job post by its key skills), then rules scan the week's tagged data for a **spike** (unusual overlap across sources in one week) or a **trend** (a category's consistent or growing presence across 4–6 weeks). Current implementation only stores fixed source/type labels; product/topic tagging, its owner, and its taxonomy are not implemented or finalized. A recommended design is a separate deterministic tagging step at ingestion, but that remains a proposal until confirmed.
-2. **Explanation (LLM-based, multi-agent):** only the candidate signals found in step 1 — along with their real underlying data — are handed to a small verification loop: a Signal Analyst selects what's worth reporting, a Verifier independently checks each candidate against the raw data for disconfirming evidence, a Writer drafts the narrative, and a Critic checks the draft for overstatement before it's finalized. The LLM is never asked to invent a correlation from raw data on its own; it only narrates and verifies a correlation that's already been detected by rules.
+An empty week still reaches the LLM and is stored as `{"leads": null}` without lead vectors. A non-empty week with no supported leads is represented as `{"leads": []}`. Attempts are auditable; failed attempts preserve the previous successful lead set, while a successful rerun makes its own lead set current.
 
-This hybrid design means RAVN's signals are always traceable back to real matching data (avoiding the risk of the LLM confidently describing a pattern that doesn't actually exist), while still getting a natural-language, executive-readable explanation.
+### Stage 4 — Signal Detection
 
-**Confidence levels** fall naturally out of this design: a signal touching one source is low confidence, two overlapping sources is medium, three or more overlapping sources in the same window is high confidence.
+The Signal Detector runs Monday at 04:00 Asia/Kolkata, after the Weekly Lead Detector. It compares current-week leads and their vectors with the target's Kundali baseline and up to three similar leads per current lead from the previous 12 weeks. It validates signal types and lead citations, and stores signal attempts and outputs separately from weekly leads. Empty current weeks are still sent to the LLM with empty current/history lists. The stage waits at 30-minute intervals for up to three checks for weekly completion; a first retryable weekly failure may receive one retry.
 
-**Output:** a concise executive report — what happened, what it likely means, and why it matters — exportable as a **PDF, generated on-demand when the user requests it** (not auto-generated every week).
+The LangGraph narrator, dashboard, and PDF export remain planned.
 
 ---
-
 ## 7. Summary of Confirmed Product Decisions
 
 - [x] Brand & messaging: RAVN — "watch-it"
@@ -121,7 +118,8 @@ This hybrid design means RAVN's signals are always traceable back to real matchi
 - [x] Onboarding: user provides main website URL → RAVN auto-discovers sources → user confirms/corrects
 - [x] Day 0 baseline: gather maximum available public history per source (not a uniform 9-month guarantee); baseline matures over time for sources without full retroactive access
 - [x] Daily cadence: full detail stored, one-liner UI, no ranking/filtering at the daily level
-- [x] Weekly cadence: hybrid rule-based signal detection (spike + trend) + multi-agent verified narrative, with confidence levels based on number of overlapping sources
+- [x] Weekly Lead Detector: selected-week LLM extraction, validated citations, lead vectors, run history, API, and Monday scheduler
+- [x] Signal Detector: Kundali and current-lead analysis, top-three prior-12-week lead RAG, validated citations, confidence-qualified output, run history, API, and Monday scheduler
 - [x] Export: PDF weekly digest, on-demand only
 - [x] Target deletion: full purge, no archive
 - [x] Guardrails: public data only, graceful degradation when a source is unavailable, no manual noise-tuning UI
@@ -130,7 +128,7 @@ This hybrid design means RAVN's signals are always traceable back to real matchi
 
 ## 8. MVP Definition
 
-The MVP proves the **full loop** — onboarding → baseline → daily logging → weekly correlated digest — for a small number of targets, without needing every source or every edge case perfectly handled.
+The MVP proves the current backend loop — onboarding → baseline → daily logging → weekly lead extraction → signal detection — for a small number of targets. The user-facing narrated digest remains a later phase.
 
 **In scope for MVP:**
 - User accounts (sign-up/login), single-owner per target
@@ -138,7 +136,7 @@ The MVP proves the **full loop** — onboarding → baseline → daily logging �
 - Day 0 profile built from whatever public history is available per source (GitHub prioritized for depth; others best-effort)
 - Daily ingestion from all four source types, stored in full, shown as one-liners in a simple dashboard feed
 - Drilldown from one-liner to full detail
-- Weekly hybrid correlation (rule-based spike/trend tagging → multi-agent verified narrative) producing one executive digest per target
+- Weekly lead extraction and Signal Detector producing saved, cited, embedded leads and signals; a user-facing narrated digest remains planned
 - PDF export of the weekly digest, on-demand
 - Full purge on target deletion
 - Graceful degradation when a source is missing (e.g. private GitHub) — pipeline continues on remaining sources

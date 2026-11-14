@@ -225,6 +225,9 @@ class DailyCollectorTests(unittest.TestCase):
         self.assertEqual(event.event_date.replace(tzinfo=timezone.utc), published_at)
         self.assertEqual(event.date_basis, "source")
         self.assertEqual(result["sources"]["ats"]["new_events"], 1)
+        self.assertEqual(result["sources"]["ats"]["candidates_total"], 1)
+        self.assertEqual(result["sources"]["ats"]["failed_items"], 0)
+        self.assertEqual(result["sources"]["ats"]["not_checked_items"], 0)
 
     def test_api_returns_date_basis_and_undated_count(self):
         self.target.ats_url = "https://careers.example.com/jobs"
@@ -250,6 +253,11 @@ class DailyCollectorTests(unittest.TestCase):
         )
         ats_summary = next(source for source in summaries["sources"] if source["source_type"] == "ats")
         self.assertEqual(ats_summary["undated_items"], 1)
+        self.assertEqual(ats_summary["candidates_total"], 2)
+        self.assertEqual(ats_summary["known_items"], 1)
+        self.assertEqual(ats_summary["failed_items"], 0)
+        self.assertEqual(ats_summary["cap_skipped_items"], 0)
+        self.assertEqual(ats_summary["not_checked_items"], 0)
         feed = list_daily_events(
             target_id=self.target.id,
             source_type="ats",
@@ -322,9 +330,18 @@ class DailyCollectorTests(unittest.TestCase):
 
         ats = result["sources"]["ats"]
         self.assertEqual(ats["undated_items"], 1)
-        self.assertEqual(ats["not_checked_items"], 1)
+        self.assertEqual(ats["candidates_total"], 2)
+        self.assertEqual(ats["known_items"], 1)
+        self.assertEqual(ats["failed_items"], 0)
+        self.assertEqual(ats["cap_skipped_items"], 0)
+        self.assertEqual(ats["not_checked_items"], 0)
         self.assertEqual(get.call_count, 2)
         self.assertEqual(self.session.query(Event).filter_by(source_type="ats").count(), 2)
+        summary = self.session.query(DailySourceSummary).filter_by(
+            target_id=self.target.id, collection_date=today, source_type="ats"
+        ).one()
+        self.assertEqual(summary.known_items, 1)
+        self.assertEqual(summary.candidates_total, 2)
 
     def test_known_blog_url_is_not_counted_as_undated(self):
         self.target.github_url = None
@@ -355,7 +372,11 @@ class DailyCollectorTests(unittest.TestCase):
 
         blog = result["sources"]["blog"]
         self.assertEqual(blog["undated_items"], 1)
-        self.assertEqual(blog["not_checked_items"], 1)
+        self.assertEqual(blog["candidates_total"], 2)
+        self.assertEqual(blog["known_items"], 1)
+        self.assertEqual(blog["failed_items"], 0)
+        self.assertEqual(blog["cap_skipped_items"], 0)
+        self.assertEqual(blog["not_checked_items"], 0)
         self.assertEqual(self.session.query(Event).filter_by(source_type="blog").count(), 2)
 
     def test_failed_job_detail_fetch_does_not_create_event(self):
@@ -375,6 +396,9 @@ class DailyCollectorTests(unittest.TestCase):
 
         ats = result["sources"]["ats"]
         self.assertEqual(ats["undated_items"], 0)
+        self.assertEqual(ats["candidates_total"], 1)
+        self.assertEqual(ats["failed_items"], 1)
+        self.assertEqual(ats["cap_skipped_items"], 0)
         self.assertEqual(ats["not_checked_items"], 1)
         self.assertEqual(self.session.query(Event).filter_by(source_type="ats").count(), 0)
 
@@ -398,10 +422,49 @@ class DailyCollectorTests(unittest.TestCase):
         ats = result["sources"]["ats"]
         self.assertEqual(get.call_count, 21)
         self.assertEqual(ats["undated_items"], 20)
+        self.assertEqual(ats["candidates_total"], 21)
+        self.assertEqual(ats["failed_items"], 0)
+        self.assertEqual(ats["cap_skipped_items"], 1)
         self.assertEqual(ats["not_checked_items"], 1)
         self.assertEqual(self.session.query(Event).filter_by(source_type="ats").count(), 20)
         overflow_url = "https://careers.example.com/jobs/role-20"
         self.assertIsNone(self.session.query(Event).filter_by(url=overflow_url).first())
+
+    def test_blog_metadata_cap_is_persisted_separately_from_undated(self):
+        self.target.github_url = None
+        self.target.blog_url = "https://example.com/blog"
+        self.session.commit()
+        today = datetime.now(collectors.COLLECTION_TIMEZONE).date()
+        posts = [
+            {
+                "title": f"Undated post {index}",
+                "link": f"https://example.com/blog/post-{index}",
+                "published": None,
+                "date_state": "undated",
+            }
+            for index in range(3)
+        ]
+        posts.append({
+            "title": "Post skipped by metadata cap",
+            "link": "https://example.com/blog/post-overflow",
+            "published": None,
+            "date_state": "not_checked",
+            "date_check_reason": "cap_skipped",
+        })
+        with patch.object(collectors, "get_blog_posts", return_value=posts):
+            result = collectors.collect_target_events(self.session, self.target, today)
+
+        blog = result["sources"]["blog"]
+        self.assertEqual(blog["candidates_total"], 4)
+        self.assertEqual(blog["undated_items"], 3)
+        self.assertEqual(blog["cap_skipped_items"], 1)
+        self.assertEqual(blog["failed_items"], 0)
+        self.assertEqual(blog["not_checked_items"], 1)
+        summary = self.session.query(DailySourceSummary).filter_by(
+            target_id=self.target.id, collection_date=today, source_type="blog"
+        ).one()
+        self.assertEqual(summary.cap_skipped_items, 1)
+        self.assertEqual(summary.not_checked_items, 1)
 
     def test_past_date_keeps_source_dated_events_skips_snapshots_and_undated(self):
         self.target.ats_url = "https://careers.example.com/jobs"

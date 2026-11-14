@@ -24,6 +24,13 @@ SOURCE_FIELDS = {
     "blog": "blog_url",
     "web_social": "web_social_url",
 }
+ZERO_CANDIDATE_COUNTS = {
+    "candidates_total": 0,
+    "known_items": 0,
+    "failed_items": 0,
+    "cap_skipped_items": 0,
+    "not_checked_items": 0,
+}
 COLLECTION_TIMEZONE = ZoneInfo("Asia/Kolkata")
 
 
@@ -84,6 +91,7 @@ def _candidate_events(
             date_state = item.get("date_state")
             if url in known_urls:
                 date_state = "not_checked"
+                item["date_check_reason"] = "known"
             elif date_state is None:
                 date_state = "dated" if _parse_date(item.get("posted_at")) else "undated"
             if not url and _event_exists(db, target.id, source_type, source_key):
@@ -99,6 +107,7 @@ def _candidate_events(
                 "url": url,
                 "event_date": _parse_date(item.get("posted_at")),
                 "date_state": date_state,
+                "date_check_reason": "known" if url in known_urls else item.get("date_check_reason"),
                 "raw_content": raw,
                 "one_liner": f"New role posted: {item.get('title') or 'Untitled role'}"
                 + (f" ({item['location']})" if item.get("location") else ""),
@@ -126,6 +135,7 @@ def _candidate_events(
             date_state = item.get("date_state")
             if url in known_urls:
                 date_state = "not_checked"
+                item["date_check_reason"] = "known"
             elif date_state is None:
                 date_state = "dated" if _parse_date(item.get("published")) else "undated"
             if url not in known_urls and _event_exists(db, target.id, source_type, source_key):
@@ -136,6 +146,7 @@ def _candidate_events(
                 "url": url,
                 "event_date": _parse_date(item.get("published")),
                 "date_state": date_state,
+                "date_check_reason": "known" if url in known_urls else item.get("date_check_reason"),
                 "raw_content": item.get("content") or item.get("title") or "",
                 "one_liner": f"New post: {item.get('title') or url}",
                 "tags": ["engineering", "blog"],
@@ -171,6 +182,32 @@ def _day_start_utc(collection_date: date) -> datetime:
     return datetime.combine(collection_date, time.min, COLLECTION_TIMEZONE).astimezone(timezone.utc)
 
 
+def _candidate_counts(source_type: str, candidates: list[dict]) -> dict[str, int]:
+    """Summarize listing coverage without treating known URLs as unchecked."""
+    counts = ZERO_CANDIDATE_COUNTS.copy()
+    if source_type not in {"ats", "blog"}:
+        return counts
+
+    counts["candidates_total"] = len(candidates)
+    for item in candidates:
+        reason = item.get("date_check_reason")
+        if reason == "known":
+            counts["known_items"] += 1
+        elif reason == "cap_skipped":
+            counts["cap_skipped_items"] += 1
+        elif (
+            reason == "failed"
+            or item.get("date_state") == "not_checked"
+            or (
+                item.get("date_state") == "dated"
+                and not _parse_date(item.get("event_date") or item.get("posted_at") or item.get("published"))
+            )
+        ):
+            counts["failed_items"] += 1
+    counts["not_checked_items"] = counts["failed_items"] + counts["cap_skipped_items"]
+    return counts
+
+
 def _save_daily_summary(
     db: Session,
     target_id: int,
@@ -180,6 +217,7 @@ def _save_daily_summary(
     error: str | None = None,
     undated_items: int = 0,
     highlight_override: str | None = None,
+    candidate_counts: dict[str, int] | None = None,
 ) -> DailySourceSummary:
     summary = db.query(DailySourceSummary).filter_by(
         target_id=target_id,
@@ -202,6 +240,8 @@ def _save_daily_summary(
     summary.error = error
     summary.collected_at = datetime.now(timezone.utc)
     summary.undated_items = undated_items
+    for name, value in (candidate_counts or ZERO_CANDIDATE_COUNTS).items():
+        setattr(summary, name, value)
     if status == "failed":
         if not summary.highlight:
             summary.highlight = "Collection failed for this source."
@@ -247,6 +287,7 @@ def collect_target_events(db: Session, target: Target, collection_date: date | N
             result["sources"][source_type] = {
                 "status": "skipped", "new_events": 0, "event_count": summary.event_count,
                 "highlight": summary.highlight, "undated_items": 0, "not_checked_items": 0,
+                **ZERO_CANDIDATE_COUNTS,
             }
             continue
 
@@ -261,6 +302,7 @@ def collect_target_events(db: Session, target: Target, collection_date: date | N
                 "status": "skipped", "new_events": 0,
                 "event_count": summary.event_count, "highlight": summary.highlight,
                 "undated_items": 0, "not_checked_items": 0,
+                **ZERO_CANDIDATE_COUNTS,
             }
             continue
 
@@ -278,9 +320,12 @@ def collect_target_events(db: Session, target: Target, collection_date: date | N
         baseline_inserted = 0
         undated_items = 0
         not_checked_items = 0
+        candidate_counts = ZERO_CANDIDATE_COUNTS.copy()
         ignored_out_of_day = 0
         try:
             candidates = _candidate_events(db, target, source_type, since, collection_date)
+            candidate_counts = _candidate_counts(source_type, candidates)
+            not_checked_items = candidate_counts["not_checked_items"]
             for item in candidates:
                 source_event_date = item["event_date"]
                 observed_at = datetime.now(timezone.utc)
@@ -299,7 +344,6 @@ def collect_target_events(db: Session, target: Target, collection_date: date | N
                         if date_state is None:
                             date_state = "dated" if source_event_date else "undated"
                         if date_state == "not_checked" or (date_state == "dated" and source_event_date is None):
-                            not_checked_items += 1
                             continue
                         if date_state == "undated":
                             undated_items += 1
@@ -388,6 +432,7 @@ def collect_target_events(db: Session, target: Target, collection_date: date | N
             summary = _save_daily_summary(
                 db, target.id, collection_date, source_type, "success",
                 undated_items=undated_items,
+                candidate_counts=candidate_counts,
             )
             db.commit()
             result["sources"][source_type] = {
@@ -398,12 +443,16 @@ def collect_target_events(db: Session, target: Target, collection_date: date | N
                 "highlight": summary.highlight,
                 "undated_items": undated_items,
                 "not_checked_items": not_checked_items,
+                **candidate_counts,
                 "ignored_out_of_day": ignored_out_of_day,
             }
         except Exception as exc:
             db.rollback()
             logger.exception("Daily collection failed for target %s source %s", target.id, source_type)
-            summary = _save_daily_summary(db, target.id, collection_date, source_type, "failed", str(exc))
+            summary = _save_daily_summary(
+                db, target.id, collection_date, source_type, "failed", str(exc),
+                candidate_counts=candidate_counts,
+            )
             db.commit()
             result["sources"][source_type] = {
                 "status": "failed",
@@ -412,6 +461,7 @@ def collect_target_events(db: Session, target: Target, collection_date: date | N
                 "highlight": summary.highlight,
                 "undated_items": 0,
                 "not_checked_items": not_checked_items,
+                **candidate_counts,
                 "error": str(exc),
             }
     return result

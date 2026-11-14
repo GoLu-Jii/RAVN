@@ -26,7 +26,7 @@ def upgrade() -> None:
     # Existing baseline rows and snapshots are known to be first-observed.
     op.execute(
         "UPDATE events SET date_basis = 'first_observed' "
-        "WHERE is_baseline = 1 OR source_type = 'web_social'"
+        "WHERE is_baseline = TRUE OR source_type = 'web_social'"
     )
     # GitHub rows are all derived from source commit timestamps. Older ATS/blog
     # non-baseline rows are left NULL unless their source date can be proven.

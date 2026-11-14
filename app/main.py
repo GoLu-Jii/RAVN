@@ -2,7 +2,8 @@ from fastapi import FastAPI
 from app.auth.routes import router as auth_router
 from app.targets.routes import router as targets_router
 from app.events.routes import router as daily_router
-from app.scheduler.jobs import create_scheduler, start_catch_up_thread
+from app.scheduler.jobs import create_scheduler, start_catch_up_thread, start_weekly_catch_up_thread
+from app.weekly.routes import router as weekly_router
 
 app = FastAPI(
     title="RAVN Competitive Intelligence API",
@@ -37,6 +38,8 @@ def print_endpoint_guide():
 [7] POST /targets/{target_id}/daily/collect -> Collect all configured daily sources (target ID only)
 [8] GET  /targets/{target_id}/daily/events -> Read stored event feed (optional filters)
 [9] GET  /targets/{target_id}/daily/summaries -> Read daily highlights grouped by source and date
+[10] POST /targets/{target_id}/weekly/run -> Analyze the last closed week (or pass week_start)
+[11] GET  /targets/{target_id}/weekly -> List saved weekly results and signal scores
 Interactive Swagger UI: http://localhost:8000/docs
 ========================================================================
 """)
@@ -47,7 +50,9 @@ def start_daily_scheduler():
     scheduler = create_scheduler()
     scheduler.start()
     app.state.daily_scheduler = scheduler
-    app.state.daily_catchup_thread = start_catch_up_thread()
+    daily_catchup_thread = start_catch_up_thread()
+    app.state.daily_catchup_thread = daily_catchup_thread
+    app.state.weekly_catchup_thread = start_weekly_catch_up_thread(daily_catchup_thread)
 
 
 @app.on_event("shutdown")
@@ -60,3 +65,4 @@ def stop_daily_scheduler():
 app.include_router(auth_router, prefix="/auth", tags=["1. Authentication"])
 app.include_router(targets_router, prefix="/targets", tags=["2. Targets & Kundali"])
 app.include_router(daily_router)
+app.include_router(weekly_router)

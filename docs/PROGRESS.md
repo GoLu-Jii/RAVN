@@ -1,8 +1,8 @@
 # RAVN — Build Progress Tracker
 
-Last updated: 2026-11-06
+Last updated: 2026-11-09
 
-Lists only what has been written and tested so far. No plans, no roadmap.
+Records implementation details that have been written and verified; the final section names the remaining planned components.
 
 ---
 
@@ -285,8 +285,7 @@ Lists only what has been written and tested so far. No plans, no roadmap.
   snapshots; stores full events and per-target/date/source summaries including `undated_items`.
   First current-day ATS/blog snapshots are baselined, later undated listings are marked
   `first_observed`, and past-date runs skip undated items and web/social snapshots. Stored tags are
-  fixed source/type labels; semantic product/topic tagging for the planned weekly detector has not
-  been implemented.
+  fixed source/type labels; semantic product/topic tagging is not implemented. The active Weekly Lead Detector passes selected-week event evidence to an LLM and stores validated, embedded leads.
 - `app/events/routes.py` — provides authenticated, target-owner-scoped endpoints:
   `POST /targets/{id}/daily/collect`, `GET /targets/{id}/daily/events` (source, since, limit,
   offset filters; baseline and raw content excluded), `GET /targets/{id}/daily/summaries` (four
@@ -314,9 +313,37 @@ Lists only what has been written and tested so far. No plans, no roadmap.
 
 ---
 
-## Scaffolding (not yet implemented)
-Empty placeholder files remain for future components:
-- `app/config.py`
-- `app/export/pdf.py`
-- `app/weekly/detector.py`, `app/weekly/models.py`,
-  `app/weekly/narrator/{analyst,critic,verifier,writer}.py`
+## Remaining Planned Components
+The Weekly Lead Detector and baseline Signal Detector, their run/output models, scheduler jobs, and owner-scoped APIs are implemented. The narrator, dashboard, PDF export, full target deletion, and full-history reset for same-ID Kundali rebuilds remain planned.
+- LangGraph weekly narrator
+- PDF export
+- Dashboard and full target deletion
+
+
+## Weekly detector implementation update — 2026-11-09
+
+Milestones M0–M11 are complete. The backend now runs scheduled and manual Monday–Sunday analyses, retrieves same-target history from up to 12 prior weeks using local embeddings and pgvector, sends structured signal proposals to the pinned Groq model without fallback, verifies cited event IDs, computes source evidence scores and spike/trend labels in code, and stores every attempt plus the latest successful target/week result. Owner-scoped weekly result and run-history APIs are implemented. Startup catch-up waits for daily recovery and handles the last closed week. The replay CLI rebuilds historical inputs with per-week cutoffs and uses a fake LLM by default. See WEEKLY_EXPLAINER.md and IMPLEMENTATION_GUIDE.md for the current contract. The LangGraph narrator, dashboard, PDF export, and full target deletion remain planned.
+
+## Final weekly-detector verification — 2026-11-09
+
+The final offline gate passed: 127 tests passed and 2 opt-in tests were skipped. `python -m compileall app scripts` passed, a fresh temporary SQLite database upgraded to head and downgraded to base, and the active Supabase database was confirmed at Alembic head `f9c2a1d7e604`; `alembic upgrade head` was a no-op. The Supabase PostgreSQL smoke test passed for pgvector, event collection/read APIs, vector ordering, and weekly storage.
+
+A Stripe target 5 / week 2026-11-02 end-to-end PostgreSQL smoke using the fake LLM and temporary deterministic vectors assembled 53 current-week events and an 11,506-token estimated input, then returned `no_signals`. Its test-only embeddings, result, and attempt rows were removed. A real embedding run could not execute in this Windows environment: after installing the pinned `sentence-transformers==6.2.0` dependency, Windows Application Control blocked PyTorch `shm.dll` with `WinError 4551`. No live Groq request was made. The active Supabase database was not emptied for a fresh migration test; its complete migration history had already been applied there during M1–M10 and the current-head upgrade check passed.
+
+## Hosted embedding schema and diagnostics update — 2026-11-11
+
+The embedding runtime uses the hosted Voyage API; it does not download or load a local embedding model. The `ab12cd34ef56` Alembic migration changes the PostgreSQL vector column from 384 to 256 dimensions and clears only incompatible derived vectors. PostgreSQL embedding jobs now check the column dimension before making a hosted request, return an actionable schema error when the migration is missing, and mark this configuration failure as non-retryable for weekly analysis. A subsequent provider failure exposed an incorrect masked Authorization header; the client now uses the configured credential and reports sanitized provider status details. Authentication failures are non-retryable; rate-limit, server, and network failures remain retryable. Non-finite vectors are rejected before storage. The full offline suite passed (173 tests; 2 opt-in tests skipped). No live Voyage call or production-database migration was performed as part of this update.
+
+## Weekly Lead Detector baseline — 2026-11-14
+
+The active weekly endpoint and scheduler now use the simplified lead pipeline: select non-baseline events by `collection_date` for the exact Monday–Sunday week, call the configured LLM even for an empty week, validate lead citations against the selected input, embed title/description only, and store dated vectors in the new `weekly_lead_runs` and `weekly_leads` tables. Empty weeks store `leads: null` without vectors. Failed attempts preserve the prior current lead set; successful reruns supersede it. The schedule is Monday 02:00 Asia/Kolkata with one retry. Daily collection and event embeddings are unchanged.
+
+The full offline suite passed (175 passed, 2 skipped). The complete Alembic chain, including the additive lead-storage migration, upgraded successfully against a temporary SQLite database. Focused tests cover exact week boundaries, baseline exclusion, empty weeks, citations, vectors, rerun safety, ownership, and scheduling. No hosted LLM, Voyage API, or live database call was made.
+
+## Signal Detector baseline — 2026-11-14
+
+Implemented the separate Signal Detector over the current Kundali, current-week weekly leads, and top-three similar leads per current lead from the preceding 12 weeks. PostgreSQL uses pgvector cosine distance; SQLite tests use cosine ranking. Retrieved history is deduplicated and recent weeks are prioritized when enforcing the conservative 49,000-byte input bound. Current leads and Kundali are never trimmed; empty current weeks still call the LLM.
+
+Signal responses validate allowed types, qualitative confidence/rationale, and current/historical lead IDs. Historical-pattern types require historical citations. Signal attempts and outputs are stored separately in `signal_detection_runs` and `detected_signals`, with failed-run preservation and successful-run supersession. Added the Monday 04:00 IST schedule, bounded 30-minute handoff checks, one first-attempt weekly retry, and owner-scoped manual/read APIs.
+
+Final offline verification passed: 190 tests passed, 2 opt-in tests skipped, and 27 subtests passed. The full Alembic chain upgraded to head on in-memory SQLite. Pylance reported no diagnostics in the changed Python modules, and `git diff --check` passed. No live LLM, Voyage, or production database calls were made.

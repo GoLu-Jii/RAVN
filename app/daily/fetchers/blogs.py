@@ -128,6 +128,7 @@ def _extract_posts_from_html(
                 else "not_checked" if include_metadata or include_content
                 else "undated"
             ),
+            "date_check_reason": None,
             "content": None,
         })
 
@@ -140,12 +141,14 @@ def _extract_posts_from_html(
     for post in (posts[:3] if include_content or include_metadata else []):
         if post["link"] in known_urls:
             post["date_state"] = "not_checked"
+            post["date_check_reason"] = "known"
             continue
         if post.get("date_state") == "dated" and not include_content:
             continue
         if details_checked >= MAX_METADATA_LOOKUPS:
             if post.get("date_state") != "dated":
                 post["date_state"] = "not_checked"
+                post["date_check_reason"] = "cap_skipped"
             continue
         details_checked += 1
         try:
@@ -153,6 +156,7 @@ def _extract_posts_from_html(
             if art_res.status_code != 200:
                 if post.get("date_state") != "dated":
                     post["date_state"] = "not_checked"
+                    post["date_check_reason"] = "failed"
             else:
                 metadata = trafilatura.extract_metadata(art_res.text)
                 if not post.get("published"):
@@ -163,12 +167,23 @@ def _extract_posts_from_html(
                         else "undated" if not value
                         else "not_checked"
                     )
+                    if post["date_state"] == "not_checked":
+                        post["date_check_reason"] = "failed"
                 extracted = trafilatura.extract(art_res.text) if include_content or include_metadata else None
                 if extracted:
                     post["content"] = extracted[:600]
         except Exception:
             if post.get("date_state") != "dated":
                 post["date_state"] = "not_checked"
+                post["date_check_reason"] = "failed"
+
+    for post in posts[MAX_METADATA_LOOKUPS:]:
+        if post["link"] in known_urls:
+            post["date_state"] = "not_checked"
+            post["date_check_reason"] = "known"
+        elif not post.get("published") and (include_content or include_metadata):
+            post["date_state"] = "not_checked"
+            post["date_check_reason"] = "cap_skipped"
 
     return posts
 
@@ -214,6 +229,11 @@ def get_blog_posts(
                 )
                 if link in (known_urls or set()):
                     date_state = "not_checked"
+                    date_check_reason = "known"
+                elif date_state == "not_checked":
+                    date_check_reason = "failed"
+                else:
+                    date_check_reason = None
 
                 content = None
                 if link and include_content:
@@ -231,6 +251,7 @@ def get_blog_posts(
                     "link": link,
                     "published": published,
                     "date_state": date_state,
+                    "date_check_reason": date_check_reason,
                     "content": content,
                 })
 

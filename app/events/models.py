@@ -2,8 +2,10 @@ from datetime import date, datetime
 
 from sqlalchemy import Date, DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
+from pgvector.sqlalchemy import Vector
 
 from app.db.base import Base
+from app.embeddings.constants import EMBEDDING_DIMENSION
 
 
 class Event(Base):
@@ -55,6 +57,33 @@ class DailySourceSummary(Base):
     status: Mapped[str] = mapped_column(String(16), nullable=False)
     event_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     undated_items: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    candidates_total: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    known_items: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    failed_items: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    cap_skipped_items: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    not_checked_items: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     highlight: Mapped[str] = mapped_column(Text, nullable=False, default="")
     error: Mapped[str | None] = mapped_column(Text)
     collected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class EventEmbedding(Base):
+    __tablename__ = "event_embeddings"
+    __table_args__ = (
+        UniqueConstraint("event_id", "model_id", "prep_version", name="uq_event_embedding_model_prep"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    event_id: Mapped[int] = mapped_column(
+        ForeignKey("events.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    model_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    dimension: Mapped[int] = mapped_column(Integer, nullable=False)
+    prep_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    text_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    embedding: Mapped[list[float]] = mapped_column(
+        Vector(EMBEDDING_DIMENSION).with_variant(JSON(), "sqlite"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )

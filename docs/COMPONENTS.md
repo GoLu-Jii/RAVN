@@ -46,38 +46,49 @@ baseline behavior, past-date collection, per-source date parsing, and startup ca
 - **Highlights:** Each source/date highlight joins up to the three newest event one-liners and reports any remaining event count. It is formatting, not LLM-generated analysis.
 - **History:** `GET /targets/{id}/daily/summaries` reads the four highlights for a date; `/daily/summaries/dates` lists dates with stored summary records. Historical baseline-only dates have `baseline_only` status; missing historical summaries report `not_recorded` because collection status cannot be inferred.
 - **Current source-date limitation:** The configured ready targets currently resolve to one unique ATS and blog URL (Stripe). A live 2026-11-06 check found source dates for all 6 ATS fallback listings and all 5 blog entries returned in the sample; the previous 2026-11-05 run saw 5/5 ATS and 15/15 blog items without parsed dates before detail-page date extraction. Current-day first-observed dates mean when RAVN noticed an item, not when the employer published it. Past-date runs do not assign current observation times to historical days. These samples should not be generalized to other companies.
-- **Tagging boundary:** Events currently receive fixed source/type labels only. Semantic product/topic tagging for the planned weekly spike/trend detector is not implemented. Recommended before detector work: add a separate deterministic tagging step at ingestion with a versioned taxonomy; this is a recommendation, not current behavior.
+- **Tagging boundary:** Events currently receive fixed source/type labels only; semantic product/topic tagging is not implemented. The Weekly Lead Detector classifies evidence through the configured LLM and preserves event citations.
 - **Recovery boundary:** After starting the 23:59 scheduler, the app checks each ready target in a background thread for the latest three completed dates with no daily summary row or with all four sources failed, then collects those gaps. Configure the count with `RAVN_DAILY_CATCHUP_DAYS` (default `3`). Catch-up and scheduled collections share a process-local lock. This is idempotent through daily summaries and event deduplication. Past-date catch-up can recover source-dated GitHub, ATS, and blog items; it skips web/social snapshots and undated first-observed items. It cannot recover source items that have since been removed, and multi-process scheduler ownership has not been configured.
 
 ---
 
-## 5. Event Store (Core Implemented; Weekly Storage Planned)
+## 5. Event Store (Implemented)
 
-- **Trigger:** None — it's passive, written to by Kundali builder and Daily collector, read by everything else
-- **Input:** Target/Kundali records from #3 and daily event records from #4
-- **Output now:** On request — paginated event feed with source/date/time filters, single-event detail, and daily source summaries, all scoped to the target owner.
-- **Planned:** Week-specific event queries and storage for weekly category counts/digests.
-- **Holds now:** User accounts, targets, Kundali profiles, detailed daily events, per-source collection checkpoints, and per-target/date/source summaries.
-- **Planned:** Weekly category counts and weekly digests; their tables are not in the current database.
-
----
-
-## 6. Weekly Signal Detector (Planned)
-
-The planned week runs Monday through Sunday, grouped by each event's `collection_date` in Asia/Kolkata. The weekly job is planned for 03:00 Asia/Kolkata each Monday, after the preceding week has closed. Embedding-based retrieval/vector storage and the LangGraph agent stage are also planned; none is implemented yet.
-
-- **Trigger:** Scheduled, once per week per target, always runs regardless of activity level
-- **Input (planned):** That week's events after semantic tagging is defined and implemented, plus the last 4–6 weeks' stored category counts for trend comparison. Current fixed source/type labels do not supply this taxonomy.
-- **Output:** A list of candidate signals handed to the weekly narrator, or a "low activity" flag summarizing the week's minimal events — never a blank output. Also stores this week's category counts for future trend comparisons.
-- **Process:**
-  - **Spike check** — scans the current week's tagged events for unusual overlap across multiple sources in the same 7-day window (e.g. commit activity + job postings in the same category).
-  - **Trend check** — compares this week's tag counts against the last 4–6 weeks' stored counts to catch patterns building gradually over several weeks, which no single week would flag alone.
-  - Each detected signal is labeled as either a **spike signal** or a **sustained/trend signal**, and assigned a confidence level based on how many sources overlap (one source = low, two = medium, three or more = high).
-- **Feeds:** Candidate signals (spike and/or trend, or low-activity flag) + underlying raw data references → Weekly Narrator
+- **Trigger:** Passive; written by the Kundali builder and daily collector, read by APIs and weekly analysis.
+- **Holds:** users, targets, Kundali snapshots, daily events, source checkpoints, daily source summaries, event embeddings, weekly lead runs/vectors, and separate signal runs/outputs.
+- **Daily read API:** owner-scoped event feed/detail and four source/date summaries. Baseline events are hidden from the feed.
+- **Weekly records:** `weekly_lead_runs` keeps lead-extraction attempts; `weekly_leads` stores validated leads, source event IDs, week date, and vector.
+- **Signal records:** `signal_detection_runs` keeps signal attempts and evidence snapshots; `detected_signals` stores current/historical lead citations, types, confidence, and rationale.
+- **Embeddings:** `event_embeddings` stores versioned 256-dimensional Voyage vectors. Embeddings are generated by the MongoDB Atlas-hosted Voyage API; PostgreSQL/pgvector in the existing Supabase database remains the vector store. SQLite uses JSON vectors for offline tests.
 
 ---
 
-## 7. Weekly Narrator (Multi-Agent Loop; Planned)
+## 6. Weekly Lead Detector (Baseline Implemented)
+
+The analysis week is Monday through Sunday by Asia/Kolkata `collection_date`. The scheduled job runs Monday at 02:00 Asia/Kolkata for the prior closed week. Manual runs use the same pipeline and can select a Monday start date.
+
+- **Input:** All non-baseline events collected during the selected week, each with database ID, collection date, source, and `raw_content`.
+- **Process:** Send the full weekly snapshot to the configured LLM without historical retrieval or compaction. Validate JSON shape and ensure every cited event ID belongs to the selected-week input. Embed only each lead's title and description using Voyage.
+- **Output:** One vector row per lead, associated with target, Monday week date, and source event IDs. An empty week still calls the LLM and stores `{"leads": null}` without creating vectors; events with no supported leads use `{"leads": []}`.
+- **Failure safety:** Every attempt is retained. Failed runs never replace the previous current lead set; a successful rerun atomically supersedes it.
+- **API:** `POST /targets/{id}/weekly/run`, `GET /targets/{id}/weekly`, `GET /targets/{id}/weekly/{week_start}`, and `GET /targets/{id}/weekly/{week_start}/runs` (all owner-scoped).
+- **Boundary:** The Weekly Lead Detector does not compare weeks or include the Kundali. The daily collection and event-embedding path is unchanged.
+- **Scheduling:** Monday 02:00 Asia/Kolkata with one retry for retryable failures; manual runs remain enabled for development. Scheduler and run lock are process-local.
+
+---
+## 7. Signal Detector (Baseline Implemented)
+
+The Signal Detector runs after the weekly lead stage and operates on saved lead vectors, not raw daily events.
+
+- **Trigger:** Monday 04:00 Asia/Kolkata; manual owner-scoped run is available.
+- **Handoff:** Requires the current successful weekly run. If it is absent or running, checks repeat at 30-minute intervals for three total checks. The first retryable weekly failure may receive one retry; a second failure skips signal detection.
+- **Input:** Current Kundali baseline, all current-week leads, and up to three similar leads per current lead from the prior 12 weeks for the same target. Candidate matches include their dates, similarity, and retrieval context.
+- **Budget:** Preserve the Kundali and current leads. Trim historical candidates oldest-first to stay within the configured default 49,000-byte conservative byte ceiling (a conservative proxy for the below-50,000-token cap); fail if the required baseline/current evidence alone is too large.
+- **Output:** Typed signals with qualitative confidence/rationale and validated current/historical lead citations. Historical pattern types require historical citations. Empty current weeks still call the LLM with empty current/history lists.
+- **Storage:** Separate `signal_detection_runs` and `detected_signals` tables. Failed attempts preserve the previous current signal set; successful reruns supersede it without deleting history.
+- **API:** `POST /targets/{id}/weekly/signals/run`, `GET /targets/{id}/weekly/{week_start}/signals`, and `GET /targets/{id}/weekly/{week_start}/signals/runs` (owner-scoped).
+
+---
+## 8. Weekly Narrator (Multi-Agent Loop; Planned)
 
 - **Trigger:** Signal Detector completes, always
 - **Input:** Candidate signals + their underlying raw event data
@@ -91,7 +102,7 @@ The planned week runs Monday through Sunday, grouped by each event's `collection
 
 ---
 
-## 8. PDF Exporter (Planned)
+## 9. PDF Exporter (Planned)
 
 - **Trigger:** User requests export (on-demand only, not auto-run weekly)
 - **Input:** The written digest from #7
@@ -99,7 +110,7 @@ The planned week runs Monday through Sunday, grouped by each event's `collection
 
 ---
 
-## 9. Dashboard/UI (Planned)
+## 10. Dashboard/UI (Planned)
 
 - **Trigger:** User opens the app
 - **Input:** One-liners from daily collector, full detail from event store (on drilldown), digests from weekly narrator — all scoped to the logged-in user's own targets via Auth Handler

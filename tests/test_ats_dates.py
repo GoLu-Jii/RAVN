@@ -41,6 +41,7 @@ class JobJsonLdDateTests(unittest.TestCase):
         self.assertEqual(len(jobs), 1)
         self.assertIsNone(jobs[0]["posted_at"])
         self.assertEqual(jobs[0]["date_state"], "not_checked")
+        self.assertEqual(jobs[0]["date_check_reason"], "known")
         get.assert_called_once()
 
     def test_fallback_reads_dateposted_from_unseen_detail_page(self):
@@ -79,6 +80,7 @@ class JobJsonLdDateTests(unittest.TestCase):
         ):
             jobs = _extract_jobs_from_html("https://example.com/careers")
         self.assertEqual(jobs[0]["date_state"], "not_checked")
+        self.assertEqual(jobs[0]["date_check_reason"], "failed")
 
     def test_detail_page_skips_malformed_json_and_reads_later_graph(self):
         fixture = Path(__file__).parent / "fixtures" / "ats_job_malformed_then_valid.html"
@@ -129,6 +131,7 @@ class GreenhouseSourceDateTests(unittest.TestCase):
         self.assertTrue(all(job["date_state"] == "dated" for job in jobs[:20]))
         self.assertEqual(jobs[-1]["date_state"], "not_checked")
         self.assertIsNone(jobs[-1]["posted_at"])
+        self.assertEqual(jobs[-1]["date_check_reason"], "cap_skipped")
 
 
 if __name__ == "__main__":
