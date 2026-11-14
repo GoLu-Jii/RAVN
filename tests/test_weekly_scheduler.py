@@ -1,5 +1,5 @@
 import unittest
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, datetime, timezone
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
@@ -9,11 +9,10 @@ from sqlalchemy.pool import StaticPool
 
 from app.auth.models import User
 from app.db.base import Base
-from app.events.models import DailySourceSummary
 from app.scheduler import jobs
 from app.targets.models import Target
 from app.weekly.config import WEEKLY_CONFIG
-from app.weekly.models import WeeklyRun
+from app.weekly.models import SignalDetectionRun, WeeklyLeadRun
 
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -56,77 +55,120 @@ class WeeklySchedulerTests(unittest.TestCase):
         Base.metadata.drop_all(self.engine)
         self.engine.dispose()
 
-    def add_summary(self, day, status):
-        self.session.add(DailySourceSummary(
+    def add_run(self, *, status, retryable=False):
+        self.session.add(WeeklyLeadRun(
             target_id=self.target.id,
-            collection_date=day,
-            source_type="github",
+            week_start_date=LAST_CLOSED,
+            attempt=1,
             status=status,
-            event_count=0,
-            undated_items=0,
-            highlight="",
-            collected_at=datetime.now(timezone.utc),
+            is_current=status in {"succeeded", "no_events"},
+            retryable=retryable,
+            input_event_ids=[],
         ))
         self.session.commit()
 
-    def test_weekly_cron_is_monday_at_three_ist(self):
+    def test_weekly_cron_is_monday_at_two_ist(self):
         scheduler = jobs.create_scheduler()
         weekly_job = scheduler.get_job("weekly_target_analysis")
         fields = {field.name: str(field) for field in weekly_job.trigger.fields}
         self.assertEqual(fields["day_of_week"], "mon")
-        self.assertEqual(fields["hour"], str(WEEKLY_CONFIG.schedule_hour))
-        self.assertEqual(fields["minute"], str(WEEKLY_CONFIG.schedule_minute))
+        self.assertEqual(fields["hour"], "2")
+        self.assertEqual(fields["minute"], "0")
         self.assertEqual(str(weekly_job.trigger.timezone), "Asia/Kolkata")
 
-    def test_weekly_startup_catchup_requires_collected_day_and_no_success(self):
-        self.add_summary(LAST_CLOSED, "success")
+    def test_signal_cron_is_monday_at_four_ist(self):
+        scheduler = jobs.create_scheduler()
+        signal_job = scheduler.get_job("weekly_signal_detection")
+        fields = {field.name: str(field) for field in signal_job.trigger.fields}
+        self.assertEqual(fields["day_of_week"], "mon")
+        self.assertEqual(fields["hour"], "4")
+        self.assertEqual(fields["minute"], "0")
+        self.assertEqual(str(signal_job.trigger.timezone), "Asia/Kolkata")
+
+    def test_signal_waits_for_weekly_run_with_three_total_checks(self):
+        fake_scheduler = FakeScheduler()
+        with (
+            patch.object(jobs, "WEEKLY_SCHEDULER", fake_scheduler),
+            patch.object(jobs, "SessionLocal", return_value=self.session),
+            patch.object(jobs, "run_signal_detection") as run_signal,
+        ):
+            jobs.run_signal_for_ready_targets(LAST_CLOSED, check_number=1)
+        run_signal.assert_not_called()
+        self.assertEqual(len(fake_scheduler.jobs), 1)
+        self.assertEqual(fake_scheduler.jobs[0][1]["args"], [LAST_CLOSED, 2])
+
+        fake_scheduler.jobs.clear()
+        with (
+            patch.object(jobs, "WEEKLY_SCHEDULER", fake_scheduler),
+            patch.object(jobs, "SessionLocal", return_value=self.session),
+            patch.object(jobs, "run_signal_detection") as run_signal,
+        ):
+            jobs.run_signal_for_ready_targets(LAST_CLOSED, check_number=3)
+        run_signal.assert_not_called()
+        self.assertEqual(fake_scheduler.jobs, [])
+
+    def test_signal_runs_only_after_weekly_success(self):
+        self.add_run(status="succeeded")
+        with (
+            patch.object(jobs, "SessionLocal", return_value=self.session),
+            patch.object(jobs, "run_signal_detection", return_value={"status": "succeeded"}) as run,
+        ):
+            jobs.run_signal_for_ready_targets(LAST_CLOSED)
+        run.assert_called_once()
+
+    def test_signal_gate_allows_exactly_one_retry_after_first_weekly_failure(self):
+        self.add_run(status="failed", retryable=True)
+        with (
+            patch.object(jobs, "SessionLocal", return_value=self.session),
+            patch.object(jobs, "run_weekly_target", return_value={"status": "succeeded"}) as retry,
+            patch.object(jobs, "run_signal_detection", return_value={"status": "succeeded"}) as run,
+        ):
+            jobs.run_signal_for_ready_targets(LAST_CLOSED)
+        retry.assert_called_once_with(
+            self.target.id,
+            LAST_CLOSED,
+            retry_number=WEEKLY_CONFIG.retry_attempts,
+        )
+        run.assert_called_once()
+
+        self.session.query(WeeklyLeadRun).delete()
+        self.session.commit()
+        self.add_run(status="failed", retryable=True)
+        latest = self.session.query(WeeklyLeadRun).one()
+        latest.attempt = 2
+        self.session.commit()
+        with (
+            patch.object(jobs, "SessionLocal", return_value=self.session),
+            patch.object(jobs, "run_weekly_target") as retry,
+            patch.object(jobs, "run_signal_detection") as run,
+        ):
+            jobs.run_signal_for_ready_targets(LAST_CLOSED)
+        retry.assert_not_called()
+        run.assert_not_called()
+
+    def test_weekly_startup_catchup_runs_without_daily_event_rows(self):
         with patch.object(jobs, "SessionLocal", return_value=self.session), patch.object(
             jobs, "run_weekly_target"
         ) as run:
             jobs.catch_up_weekly_runs(now=NOW)
         run.assert_called_once_with(self.target.id, LAST_CLOSED)
 
-        run_record = WeeklyRun(
-            target_id=self.target.id,
-            week_start_date=LAST_CLOSED,
-            attempt=1,
-            status="succeeded",
-            retryable=False,
-        )
-        self.session.add(run_record)
-        self.session.commit()
+        self.add_run(status="no_events")
         with patch.object(jobs, "SessionLocal", return_value=self.session), patch.object(
             jobs, "run_weekly_target"
         ) as run:
             jobs.catch_up_weekly_runs(now=NOW)
         run.assert_not_called()
 
-    def test_weekly_startup_catchup_skips_failed_only_or_uncollected_days(self):
-        self.add_summary(LAST_CLOSED, "failed")
-        self.add_summary(LAST_CLOSED + timedelta(days=1), "skipped")
+    def test_weekly_startup_catchup_does_not_repeat_terminal_failure(self):
+        self.add_run(status="failed", retryable=False)
         with patch.object(jobs, "SessionLocal", return_value=self.session), patch.object(
             jobs, "run_weekly_target"
         ) as run:
             jobs.catch_up_weekly_runs(now=NOW)
         run.assert_not_called()
 
-    def test_weekly_startup_catchup_does_not_retry_terminal_failure(self):
-        self.add_summary(LAST_CLOSED, "success")
-        self.session.add(WeeklyRun(
-            target_id=self.target.id,
-            week_start_date=LAST_CLOSED,
-            attempt=1,
-            status="failed",
-            retryable=False,
-        ))
-        self.session.commit()
-        with patch.object(jobs, "SessionLocal", return_value=self.session), patch.object(
-            jobs, "run_weekly_target"
-        ) as run:
-            jobs.catch_up_weekly_runs(now=NOW)
-        run.assert_not_called()
-
-    def test_retryable_failure_schedules_backoff_but_nonretryable_does_not(self):
+    def test_retryable_failure_schedules_one_retry(self):
         fake_scheduler = FakeScheduler()
         with (
             patch.object(jobs, "WEEKLY_SCHEDULER", fake_scheduler),
@@ -156,7 +198,7 @@ class WeeklySchedulerTests(unittest.TestCase):
             jobs.run_weekly_target(self.target.id, LAST_CLOSED)
         self.assertEqual(fake_scheduler.jobs, [])
 
-    def test_retry_stops_after_configured_number(self):
+    def test_retry_stops_after_configured_retry(self):
         fake_scheduler = FakeScheduler()
         with (
             patch.object(jobs, "WEEKLY_SCHEDULER", fake_scheduler),
@@ -165,7 +207,11 @@ class WeeklySchedulerTests(unittest.TestCase):
                 "status": "failed", "retryable": True,
             }),
         ):
-            jobs.run_weekly_target(self.target.id, LAST_CLOSED, retry_number=WEEKLY_CONFIG.retry_attempts)
+            jobs.run_weekly_target(
+                self.target.id,
+                LAST_CLOSED,
+                retry_number=WEEKLY_CONFIG.retry_attempts,
+            )
         self.assertEqual(fake_scheduler.jobs, [])
 
 

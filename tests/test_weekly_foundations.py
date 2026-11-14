@@ -86,7 +86,7 @@ class WeeklyConfigTests(unittest.TestCase):
         config = WeeklyConfig.from_env({})
         self.assertEqual(config.history_weeks, 12)
         self.assertEqual(config.half_life_weeks, 2.0)
-        self.assertEqual(config.schedule_hour, 3)
+        self.assertEqual(config.schedule_hour, 2)
         self.assertEqual(config.weekly_llm_model, "openai/gpt-oss-120b")
         self.assertEqual(config.embed_model_id, "voyage-4-lite")
         self.assertEqual(config.voyage_endpoint, "https://ai.mongodb.com/v1/embeddings")

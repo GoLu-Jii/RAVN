@@ -1,6 +1,6 @@
 # Weekly Detector — Agreed Design
 
-> **Planning document only.** This describes the simplified Weekly Detector and Signal Detector contracts agreed during design discussions. It is not a description of the current implementation. No implementation changes are implied by this document.
+> **Implementation status:** The Weekly Lead Detector (sections 1–11) and baseline Signal Detector (sections 12–13) are implemented. The detailed sections below document their behavior.
 
 ## 1. Purpose and boundary
 
@@ -50,12 +50,14 @@ Conceptual LLM input:
   "week_start": "2026-11-09",
   "events": [
     {
-      "event_id": 123,
+      "id": 123,
+      "collection_date": "2026-11-09",
       "source": "github",
       "raw_content": "{\"sha\":\"...\",\"repo\":\"org/repo\",\"message\":\"...\",\"date\":\"...\",\"url\":\"...\"}"
     },
     {
-      "event_id": 124,
+      "id": 124,
+      "collection_date": "2026-11-10",
       "source": "ats",
       "raw_content": "Title: Staff Engineer\nLocation: Remote\nURL: https://example.test/jobs/123\nDescription: ..."
     }
@@ -97,7 +99,7 @@ Recommended non-empty response:
 }
 ```
 
-The exact field names and validation limits are implementation details to finalize before coding. The intended meaning is:
+The implementation validates exactly the `leads` top-level property and the following fields:
 
 - `title`: concise lead headline.
 - `description`: evidence-grounded explanation, including small and major observations when supported.
@@ -115,7 +117,7 @@ If there are no eligible events, the Weekly Detector still calls the LLM with an
 
 The run is saved with a `no_events` outcome and the raw/validated LLM response for auditability. There are no lead rows and no vectors for that week. `NaN` is not used: it is not valid JSON and cannot represent a valid embedding vector. A successful analysis that finds no leads despite non-empty input may use an empty array (`"leads": []`); that is distinct from the agreed empty-input response.
 
-## 6. Proposed persistence design
+## 6. Implemented persistence design
 
 The hosted Voyage API generates embeddings; the RAVN database stores lead records and vectors. For PostgreSQL/Supabase the vector column is pgvector. SQLite can provide a JSON-backed development/test representation if the project continues to support it.
 
@@ -129,10 +131,14 @@ One record per execution attempt for a target/week:
 | `target_id` | Target being processed. |
 | `week_start_date` | Canonical Monday key for the week. |
 | `attempt` | Sequential attempt number for retries/testing. |
-| `status` | For example `running`, `succeeded`, `no_events`, or `failed`. Exact state machine is to be finalized. |
+| `status` | `running`, `succeeded`, `no_events`, or `failed`. |
+| `is_current` | Marks the latest successful run for this target/week. |
+| `retryable` | Indicates whether the scheduler should retry a failed attempt. |
 | `input_event_ids` | Exact IDs of eligible events submitted to the LLM; empty for an empty week. |
-| `llm_model`, `embedding_model` | Model identifiers used for this attempt. |
-| `raw_output` | LLM response for debugging/audit, subject to final retention policy. |
+| `input_json`, `output_json` | Complete input snapshot and validated JSON response. |
+| `llm_provider`, `llm_model`, `embedding_model_id`, `prompt_version` | Model and prompt identifiers used for this attempt. |
+| `input_token_estimate` | Approximate size of the saved input. |
+| `raw_output` | Original LLM response for debugging/audit. |
 | `error` | Failure detail when applicable. |
 | `started_at`, `finished_at` | Attempt timestamps. |
 
@@ -149,9 +155,9 @@ One record per generated lead:
 | `title`, `description` | Lead content and the text used to form embedding input. |
 | `source_event_ids` | References to the daily `events.id` values supporting the lead. |
 | `embedding` | Hosted Voyage vector for the lead text. |
-| `embedding_model`, `created_at` | Vector provenance and creation time. |
+| `embedding_model_id`, `created_at` | Vector provenance and creation time. |
 
-These are a proposed logical design, not existing tables. The precise relational representation for source references (JSON ID list versus a normalized association table), indexes, vector dimension, and migration shape must be decided during the implementation plan. Source-event references should be validated as belonging to the same target and selected week before persistence.
+These tables are implemented by an additive Alembic migration. Source-event IDs are stored as JSON and validated against the selected-week input before persistence. PostgreSQL uses `vector(256)` and SQLite uses JSON-backed vectors.
 
 ### Vector text
 
@@ -166,9 +172,9 @@ Do not embed `week_start_date`, `target_id`, run ID, or source-event IDs. They a
 
 ## 7. Scheduling and testing
 
-- **Current planning schedule:** Monday at 02:00 Asia/Kolkata, after the current Sunday 23:59 daily collection schedule. This fixed delay is an initial implementation choice; dynamic completion checks are deferred until the baseline works.
+- **Schedule:** Monday at 02:00 Asia/Kolkata, after the current Sunday 23:59 daily collection schedule. This fixed delay is the initial implementation; dynamic completion checks are deferred.
 - **Testing:** Manual runs are allowed during development so each stage can be tested without waiting for the scheduled job.
-- **Later production behavior:** Manual execution is expected to be removed or restricted; scheduled execution with one or two retries is planned for the final system. Retry policy and final authorization behavior remain to be specified.
+- **Retry policy:** One scheduled retry follows a retryable failure. Manual execution remains available during development.
 - The current scheduler is process-local. Multi-instance locking/deduplication is not part of this initial baseline.
 
 ## 8. Reruns, retries, and replacement
@@ -180,12 +186,11 @@ Agreed direction:
 - A failed attempt must not erase a previously successful week's leads.
 - A successful rerun should become the active/current lead set for that target/week; earlier successful output should not be mixed into it.
 
-Still to decide before implementation:
+Implemented replacement behavior:
 
-- Whether old successful lead rows are deleted, retained as superseded versions, or retained behind an `active`/`superseded` run state.
-- How a retry resumes after some lead embeddings were already generated and stored.
-- Whether a retry uses the exact original input snapshot or re-queries current database rows for that week.
-- What happens if daily events for a week are corrected after a successful weekly run.
+- Successful runs are retained in history; `is_current` identifies the active run. A successful rerun supersedes the earlier current run without mixing their leads.
+- Each retry is a new attempt and re-queries the selected week. Lead embeddings are committed together with the successful run, so a failed embedding step does not persist partial leads.
+- Corrected or newly collected events are reflected by a successful manual or scheduled rerun; the new successful run becomes current.
 
 ## 9. Out of scope for the Weekly Detector
 
@@ -201,17 +206,17 @@ Still to decide before implementation:
 
 The Weekly Detector baseline is ready to hand off to Signal Detector implementation when:
 
-1. A selected target/week query demonstrably includes only non-baseline `events` whose `collection_date` is in the selected Monday–Sunday window.
-2. The exact input event IDs, source names, and raw content passed to the LLM can be inspected.
-3. The LLM response is structured and every lead citation is validated against that run's input.
-4. Non-empty weeks produce one stored lead row/vector per returned lead with week date and source-event references.
-5. Empty weeks call the LLM with an empty list, store the `no_events` run and `leads: null`, and create no vectors.
-6. A failed attempt is inspectable/retryable and does not corrupt the previous successful lead set.
-7. Manual test runs work, and the fixed Monday 02:00 scheduled run can invoke the same detector flow.
+1. [x] A selected target/week query includes only non-baseline events whose `collection_date` is in the selected Monday–Sunday window.
+2. [x] The exact input event IDs, source names, collection dates, and raw content passed to the LLM are saved for inspection.
+3. [x] The LLM response is structured and every lead citation is validated against that run's input.
+4. [x] Non-empty weeks produce one stored lead row/vector per returned lead with week date and source-event references.
+5. [x] Empty weeks call the LLM with an empty list, store the `no_events` run and `leads: null`, and create no vectors.
+6. [x] A failed attempt is inspectable/retryable and does not corrupt the previous successful lead set.
+7. [x] Manual test runs work, and the fixed Monday 02:00 scheduled run invokes the same detector flow.
 
-## 11. Current implementation is different
+## 11. Implementation boundary
 
-The current weekly implementation includes event embeddings, prior-week similarity retrieval, LLM signal proposals, citation verification, signal scoring, and `weekly_runs`/`weekly_results`/`weekly_signals` persistence. This plan intentionally replaces that conceptual flow. The current implementation should remain untouched during planning; implementation should begin only after the combined design and its required schema/migration decisions have been agreed.
+The active weekly endpoint and scheduler implement the lead extraction flow in sections 1–10 and write `weekly_lead_runs` and `weekly_leads`. Legacy event embedding, historical retrieval, signal proposal, verification, scoring, replay, and `weekly_runs`/`weekly_results`/`weekly_signals` code remains in the repository for compatibility and offline evaluation, but it is no longer invoked by the active Weekly Lead Detector. Daily collection and its event-embedding path are unchanged.
 
 ## 12. Signal Detector — Agreed Design
 
@@ -219,7 +224,7 @@ The current weekly implementation includes event embeddings, prior-week similari
 
 ### 12.1 Purpose and responsibilities
 
-The Signal Detector looks for meaningful developments by comparing current-week leads with the target's baseline Kundali and related leads from previous weeks. Signals can represent emerging activity, continuation, acceleration, slowdown, strategic shifts, sudden changes, cross-source patterns, or another useful evidence-backed development.
+The Signal Detector looks for meaningful developments by comparing current-week leads with the target's baseline Kundali and related leads from previous weeks. Signals can represent emerging activity, continuation, acceleration, slowdown/deceleration, strategic shifts, sudden changes, cross-source patterns, or another useful evidence-backed development.
 
 The detector may report a genuinely new current-week development even if no prior weekly lead is relevant. It must not claim a historical trend or shift without historical evidence.
 
@@ -232,7 +237,7 @@ The Signal Detector is responsible for:
 5. Validating signal output and its lead citations.
 6. Persisting the signal run and the resulting signals separately from weekly leads.
 
-It does not create or revise weekly leads. A target rebuild/reset starts a fresh target history; the new detector history must not be joined to the deleted target data.
+It does not create or revise weekly leads. Retrieval is scoped to the target ID, so a deleted target recreated with a new ID cannot share prior leads. The existing in-place Kundali rebuild endpoint does not purge the target's daily or weekly history; same-ID rebuilds can therefore still retrieve leads collected before the rebuilt baseline. Implementing the agreed full-history reset for that endpoint remains separate work.
 
 ### 12.2 Schedule and handoff
 
@@ -338,7 +343,7 @@ Proposed logical records:
 
 Each attempt is recorded. Failed attempts do not replace a successful result. If a newer run for the same target/week succeeds, keep the previous successful signal set for audit and mark it superseded; only the latest successful version is active for consumers.
 
-Exact physical table names, normalized versus JSON storage for cited lead IDs, and indexes are implementation planning details. Weekly leads remain the source of truth for weekly findings; the Signal Detector must not rewrite them.
+The implementation uses `signal_detection_runs` and `detected_signals`; the run's `input_size_bytes` records the conservative UTF-8 byte count used against the under-50,000 byte ceiling. Lead citations are JSON ID lists. Weekly leads remain the source of truth for weekly findings; the Signal Detector does not rewrite them. Failed runs leave the previous run marked current; a successful rerun supersedes it and retains the prior run for audit.
 
 ### 12.8 Flow diagram
 
@@ -370,16 +375,16 @@ flowchart TD
 
 ### 12.9 Signal Detector baseline completion criteria
 
-The Signal Detector baseline is ready when:
+The Signal Detector baseline completion criteria are:
 
-1. It starts only after the Weekly Detector has successfully stored current-week lead vectors, following the agreed schedule/check/retry handoff.
-2. It loads the target Kundali and current-week leads, and retrieves only same-target historical leads from the previous 12 weeks.
-3. It retrieves up to three historical candidates per current lead and provides their dates and similarity values as candidate metadata.
-4. It preserves current leads and Kundali, prioritizes recent historical evidence, and keeps its LLM input below 50,000 tokens.
-5. It calls the LLM with baseline plus empty current/history lists when the week has no leads.
-6. It validates signal categories, confidence shape, and current/historical lead citations.
-7. New/emerging signals can be returned without historical citations; signals claiming historical behavior cite historical leads.
-8. Each attempt and its successful signal set are stored; failed attempts preserve the previous success, and successful replacements supersede rather than erase earlier versions.
+1. [x] It starts only after the Weekly Detector has successfully stored current-week lead vectors, following the agreed schedule/check/retry handoff.
+2. [x] It loads the target Kundali and current-week leads, and retrieves only same-target historical leads from the previous 12 weeks.
+3. [x] It retrieves up to three historical candidates per current lead and provides their dates and similarity values as candidate metadata.
+4. [x] It preserves current leads and Kundali, prioritizes recent historical evidence, and enforces a conservative 49,000-byte input ceiling as a proxy for the below-50,000-token requirement.
+5. [x] It calls the LLM with baseline plus empty current/history lists when the week has no leads.
+6. [x] It validates signal categories, confidence shape, and current/historical lead citations.
+7. [x] New/emerging signals can be returned without historical citations; signals claiming historical behavior cite historical leads.
+8. [x] Each attempt and its successful signal set are stored; failed attempts preserve the previous success, and successful replacements supersede rather than erase earlier versions.
 
 ## 13. Combined weekly-to-signal schedule
 

@@ -22,8 +22,10 @@ def normalize_voyage_endpoint(value: str) -> str:
 @dataclass(frozen=True)
 class WeeklyConfig:
     week_start: str = "monday"
-    schedule_hour: int = 3
+    schedule_hour: int = 2
     schedule_minute: int = 0
+    signal_schedule_hour: int = 4
+    signal_input_byte_budget: int = 49000
     timezone: str = "Asia/Kolkata"
     history_weeks: int = 12
     half_life_weeks: float = 2.0
@@ -41,16 +43,22 @@ class WeeklyConfig:
     embed_model_id: str = "voyage-4-lite"
     prep_version: str = "voyage-document-v1"
     voyage_endpoint: str = "https://ai.mongodb.com/v1/embeddings"
-    retry_attempts: int = 6
+    retry_attempts: int = 1
 
     def __post_init__(self) -> None:
         if self.week_start.lower() != "monday":
             raise ValueError("The weekly design uses Monday as the fixed week start.")
-        if not 0 <= self.schedule_hour <= 23 or not 0 <= self.schedule_minute <= 59:
+        if (
+            not 0 <= self.schedule_hour <= 23
+            or not 0 <= self.schedule_minute <= 59
+            or not 0 <= self.signal_schedule_hour <= 23
+        ):
             raise ValueError("Schedule hour/minute are out of range.")
-        for name in ("history_weeks", "max_queries", "example_k", "count_k", "input_token_budget", "max_output_tokens", "max_signals", "retry_attempts"):
+        for name in ("history_weeks", "max_queries", "example_k", "count_k", "input_token_budget", "signal_input_byte_budget", "max_output_tokens", "max_signals", "retry_attempts"):
             if getattr(self, name) < 1:
                 raise ValueError(f"{name} must be at least 1.")
+        if self.signal_input_byte_budget >= 50000:
+            raise ValueError("signal_input_byte_budget must remain below 50000.")
         if self.half_life_weeks <= 0 or self.trend_min_weeks < 2:
             raise ValueError("Half-life must be positive and a trend must span at least two weeks.")
         if not 0 <= self.retrieval_budget_share <= 1:

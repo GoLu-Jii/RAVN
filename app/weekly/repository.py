@@ -8,6 +8,12 @@ from sqlalchemy.orm import Session
 from app.targets.models import Target
 from app.weekly.config import WEEKLY_CONFIG
 from app.weekly.models import WeeklyResult, WeeklyRun, WeeklySignal
+from app.weekly.models import (
+    DetectedSignal,
+    SignalDetectionRun,
+    WeeklyLead,
+    WeeklyLeadRun,
+)
 from app.weekly.windows import require_monday
 
 
@@ -216,3 +222,231 @@ def list_runs_for_owner(
         target_id=target_id,
         week_start_date=week_start,
     ).order_by(WeeklyRun.attempt.desc()).all()
+
+
+def create_lead_run(
+    db: Session,
+    *,
+    target_id: int,
+    week_start: date,
+    attempt: int,
+    input_event_ids: list[int],
+    input_json: dict,
+    input_token_estimate: int,
+) -> WeeklyLeadRun:
+    run = WeeklyLeadRun(
+        target_id=target_id,
+        week_start_date=week_start,
+        attempt=attempt,
+        status="running",
+        input_event_ids=input_event_ids,
+        input_json=input_json,
+        input_token_estimate=input_token_estimate,
+    )
+    db.add(run)
+    db.commit()
+    db.refresh(run)
+    return run
+
+
+def complete_lead_run(
+    db: Session,
+    run: WeeklyLeadRun,
+    *,
+    output_json: dict,
+    raw_output: str,
+    llm_provider: str | None,
+    llm_model: str | None,
+    embedding_model_id: str,
+    prompt_version: str,
+    leads: list[dict],
+    vectors: list[list[float]],
+) -> WeeklyLeadRun:
+    if len(leads) != len(vectors):
+        raise ValueError("Lead and embedding counts do not match.")
+    db.query(WeeklyLeadRun).filter(
+        WeeklyLeadRun.target_id == run.target_id,
+        WeeklyLeadRun.week_start_date == run.week_start_date,
+        WeeklyLeadRun.is_current.is_(True),
+    ).update({WeeklyLeadRun.is_current: False}, synchronize_session=False)
+    run.status = "no_events" if not run.input_event_ids else "succeeded"
+    run.is_current = True
+    run.retryable = False
+    run.output_json = output_json
+    run.raw_output = raw_output
+    run.llm_provider = llm_provider
+    run.llm_model = llm_model
+    run.embedding_model_id = embedding_model_id
+    run.prompt_version = prompt_version
+    run.finished_at = datetime.now(timezone.utc)
+    run.error = None
+    for index, (lead, vector) in enumerate(zip(leads, vectors)):
+        db.add(WeeklyLead(
+            run_id=run.id,
+            target_id=run.target_id,
+            week_start_date=run.week_start_date,
+            lead_index=index,
+            title=lead["title"],
+            description=lead["description"],
+            source_event_ids=lead["source_event_ids"],
+            embedding=vector,
+            embedding_model_id=embedding_model_id,
+        ))
+    db.commit()
+    db.refresh(run)
+    return run
+
+
+def fail_lead_run(
+    db: Session,
+    run_id: int,
+    *,
+    error: str,
+    retryable: bool,
+    raw_output: str | None = None,
+    output_json: dict | None = None,
+    llm_provider: str | None = None,
+    llm_model: str | None = None,
+) -> WeeklyLeadRun:
+    run = db.query(WeeklyLeadRun).filter_by(id=run_id).one()
+    run.status = "failed"
+    run.retryable = retryable
+    run.error = error
+    run.raw_output = raw_output
+    run.output_json = output_json
+    if llm_provider:
+        run.llm_provider = llm_provider
+    if llm_model:
+        run.llm_model = llm_model
+    run.finished_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(run)
+    return run
+
+
+def get_current_lead_run(
+    db: Session, target_id: int, week_start: date
+) -> WeeklyLeadRun | None:
+    return db.query(WeeklyLeadRun).filter_by(
+        target_id=target_id,
+        week_start_date=week_start,
+        is_current=True,
+    ).first()
+
+
+def list_lead_runs_for_owner(
+    db: Session, target_id: int, owner_id: int, week_start: date
+) -> list[WeeklyLeadRun] | None:
+    if get_owned_target(db, target_id, owner_id) is None:
+        return None
+    return db.query(WeeklyLeadRun).filter_by(
+        target_id=target_id,
+        week_start_date=week_start,
+    ).order_by(WeeklyLeadRun.attempt.desc()).all()
+
+
+def list_current_lead_runs_for_owner(
+    db: Session, target_id: int, owner_id: int
+) -> list[WeeklyLeadRun] | None:
+    if get_owned_target(db, target_id, owner_id) is None:
+        return None
+    return db.query(WeeklyLeadRun).filter_by(
+        target_id=target_id,
+        is_current=True,
+    ).order_by(WeeklyLeadRun.week_start_date.desc()).all()
+
+
+def complete_signal_detection_run(
+    db: Session,
+    run: SignalDetectionRun,
+    *,
+    output_json: dict,
+    raw_output: str,
+    llm_provider: str | None,
+    llm_model: str | None,
+    prompt_version: str,
+) -> SignalDetectionRun:
+    db.query(SignalDetectionRun).filter(
+        SignalDetectionRun.target_id == run.target_id,
+        SignalDetectionRun.week_start_date == run.week_start_date,
+        SignalDetectionRun.is_current.is_(True),
+    ).update({SignalDetectionRun.is_current: False}, synchronize_session=False)
+    signals = output_json["signals"]
+    run.status = "succeeded" if signals else "no_signals"
+    run.is_current = True
+    run.retryable = False
+    run.output_json = output_json
+    run.raw_output = raw_output
+    run.llm_provider = llm_provider
+    run.llm_model = llm_model
+    run.prompt_version = prompt_version
+    run.finished_at = datetime.now(timezone.utc)
+    run.error = None
+    for index, signal in enumerate(signals):
+        db.add(DetectedSignal(
+            run_id=run.id,
+            target_id=run.target_id,
+            week_start_date=run.week_start_date,
+            signal_index=index,
+            title=signal["title"],
+            description=signal["description"],
+            signal_types=signal["signal_types"],
+            confidence=signal["confidence"],
+            confidence_rationale=signal["confidence_rationale"],
+            current_lead_ids=signal["current_lead_ids"],
+            historical_lead_ids=signal["historical_lead_ids"],
+        ))
+    db.commit()
+    db.refresh(run)
+    return run
+
+
+def fail_signal_detection_run(
+    db: Session,
+    run_id: int,
+    *,
+    error: str,
+    retryable: bool,
+    raw_output: str | None = None,
+    output_json: dict | None = None,
+    llm_provider: str | None = None,
+    llm_model: str | None = None,
+) -> SignalDetectionRun:
+    run = db.query(SignalDetectionRun).filter_by(id=run_id).one()
+    run.status = "failed"
+    run.retryable = retryable
+    run.error = error
+    run.raw_output = raw_output
+    run.output_json = output_json
+    if llm_provider:
+        run.llm_provider = llm_provider
+    if llm_model:
+        run.llm_model = llm_model
+    run.finished_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(run)
+    return run
+
+
+def get_current_signal_detection_run(
+    db: Session, target_id: int, week_start: date
+) -> SignalDetectionRun | None:
+    return db.query(SignalDetectionRun).filter_by(
+        target_id=target_id,
+        week_start_date=week_start,
+        is_current=True,
+    ).first()
+
+
+def list_signal_detection_runs_for_owner(
+    db: Session,
+    target_id: int,
+    owner_id: int,
+    week_start: date,
+) -> list[SignalDetectionRun] | None:
+    if get_owned_target(db, target_id, owner_id) is None:
+        return None
+    return db.query(SignalDetectionRun).filter_by(
+        target_id=target_id,
+        week_start_date=week_start,
+    ).order_by(SignalDetectionRun.attempt.desc()).all()

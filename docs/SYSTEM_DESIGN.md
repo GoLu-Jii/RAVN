@@ -1,6 +1,6 @@
 # RAVN System Design
 
-This document describes the implemented backend architecture, data model, and runtime flows in this repository. It reflects the code as currently implemented; planned UI, narrator, and PDF capabilities are called out separately.
+This document describes the implemented backend architecture, data model, and runtime flows in this repository. It reflects both detector stages; the UI, narrator, and PDF capabilities remain future work.
 
 ## 1. System at a glance
 
@@ -58,9 +58,9 @@ flowchart LR
 | `app/kundali/` | Gathers a Day-0 snapshot from configured sources and optionally synthesizes it into a strategic dossier. |
 | `app/daily/` | Fetches daily source changes, normalizes dates and event payloads, deduplicates items, and stores event and source-summary records. |
 | `app/embeddings/` | Prepares deterministic event text, calls hosted Voyage embeddings, and incrementally stores model/version-tagged vectors. |
-| `app/weekly/` | Builds evidence windows, computes coverage/counts, retrieves similar historical events, calls and validates the weekly LLM, verifies citations, scores signals, and persists results. |
-| `app/scheduler/` | Schedules daily collection and weekly analysis, runs bounded catch-up, and schedules retries for retryable weekly failures. |
-| `app/llm/` | Shared provider client used by Kundali synthesis and other general LLM features. The weekly LLM stage pins its configured model and disables provider fallback. |
+| `app/weekly/` | Selects one collection week, extracts and embeds leads, retrieves prior lead vectors, detects/validates signals, and persists separate lead/signal histories. |
+| `app/scheduler/` | Schedules daily collection, Monday 02:00 weekly leads and Monday 04:00 signal detection, plus bounded handoff checks and weekly retries. |
+| `app/llm/` | Shared provider client used by Kundali synthesis and detector stages. Weekly and Signal Detector calls pin the configured model and disable provider fallback. |
 | `app/export/` | PDF export module is currently a placeholder; PDF export is not implemented. |
 
 ### External services
@@ -71,7 +71,7 @@ flowchart LR
 | ATS and company public websites | Job postings and career pages; supported adapters include Greenhouse, Lever, Ashby, and Workable where their public endpoints are available. |
 | Blog feeds/pages and public social/update pages | Daily public updates, collected by the source-specific fetchers. |
 | Voyage by MongoDB Atlas | Hosted `voyage-4-lite` embeddings; configured by `VOYAGE_API_KEY`. No embedding model is bundled locally. |
-| LLM providers | Kundali synthesis uses the shared provider-routing client. Weekly analysis uses the configured weekly model through the client, with fallback disabled for that call. |
+| LLM providers | Kundali synthesis uses the shared provider-routing client. Weekly and Signal Detector stages use the configured model with provider fallback disabled. |
 | Supabase PostgreSQL | Optional/current hosted database deployment described by the project docs; PostgreSQL uses pgvector for vector storage and retrieval. |
 
 The exact active database is determined at runtime by `DATABASE_URL`. If it is unset, the application defaults to `sqlite:///./ravn.db`. The same environment setting is used by Alembic when applying migrations.
@@ -105,11 +105,11 @@ sequenceDiagram
     API-->>U: Target/Kundali status
     U->>API: Collect daily / run weekly
     API->>Auth: Validate JWT and target ownership
-    API->>DB: Read/write events, embeddings, summaries, weekly records
+    API->>DB: Read/write events, summaries, weekly lead records
     API->>Fetch: Collect public-source changes (manual daily endpoint)
     Note over API,Embed: Scheduled daily jobs also embed after collection; manual daily collection does not.
-    API->>Embed: Weekly run creates missing/stale vectors
-    API->>LLM: Analyze assembled weekly evidence when events exist
+    API->>LLM: Extract leads from selected-week events, including empty weeks
+    API->>Embed: Embed each returned lead's title and description
     API-->>U: Collection report or weekly run summary
 ```
 
@@ -133,13 +133,13 @@ For each configured source, the collector:
 4. Deduplicates by `(target_id, source_type, source_key)`.
 5. Stores new evidence in `events`, recording whether it is source-dated or first-observed.
 6. Upserts a per-target/source checkpoint and per-target/date/source collection summary.
-7. The daily collection operation itself does not create embeddings. The scheduled collection job and startup catch-up call the embedding service after collection; embedding failures are logged and do not turn completed collection into a failed collection. A manual weekly run also fills missing or changed embeddings before analysis.
+7. The daily collection operation itself does not create embeddings. The scheduled collection job and startup catch-up call the event embedding service after collection; embedding failures are logged and do not turn completed collection into a failed collection. The weekly lead detector embeds generated leads separately.
 
 The first undated ATS/blog snapshot is treated as baseline rather than new weekly activity. A first web/social snapshot is also baseline. Historical catch-up can recover dated sources, but cannot recreate past snapshots or undated observations.
 
 ### 3.3 Weekly analysis
 
-Manual analysis is exposed by `POST /targets/{target_id}/weekly/run`; scheduled analysis runs on Monday at the configured time (default 03:00 Asia/Kolkata) for the last closed week.
+Manual analysis is exposed by `POST /targets/{target_id}/weekly/run`; scheduled analysis runs Monday at 02:00 Asia/Kolkata for the last closed week.
 
 ```mermaid
 flowchart TD
@@ -147,43 +147,50 @@ flowchart TD
     B -- no --> X[HTTP error]
     B -- yes --> C{Monday week_start?}
     C -- no --> X
-    C -- yes --> D[Create weekly_runs attempt]
-    D --> E[Embed missing or changed target events]
-    E --> F{Embedding complete?}
-    F -- no --> Z[Record failed attempt and retryability]
-    F -- yes --> G[Build selected-week and history evidence]
-    G --> H[Calculate source coverage and event counts]
-    H --> I[Retrieve similar prior events by embedding]
-    I --> J[Compact payload to input budget]
-    J --> K{Current-week events?}
-    K -- no --> L[Create low_activity result; no LLM call]
-    K -- yes --> M[Call weekly LLM and validate JSON]
-    M --> N[Verify candidate citations against stored events]
-    N --> O[Compute evidence-based scores and labels]
-    O --> P{Any verified signals?}
-    P -- yes --> Q[Persist ok result and verified signals]
-    P -- no --> R[Persist no_signals result]
-    L --> S[Commit successful run/result transaction]
-    Q --> S
-    R --> S
-    S --> T[Return summary, IDs, signal counts]
-    Z --> U[Return failed status/error/retryable]
+    C -- yes --> D[Select events by collection_date for Monday-Sunday]
+    D --> E[Exclude baseline events and snapshot input]
+    E --> F[Call configured LLM, including empty weeks]
+    F --> G[Validate JSON and source event IDs]
+    G --> H{Leads returned?}
+    H -- yes --> I[Embed title and description]
+    H -- no / null --> J[Create no lead vectors]
+    I --> K[Atomically persist lead run and vectors]
+    J --> K
+    K --> L[Make successful run current for target/week]
+    G -- invalid / provider error --> Z[Record failed attempt; retain prior current run]
+    I -- embedding error --> Z
+    L --> M[Return run status and lead count]
+    Z --> N[Return failed status and retryability]
 ```
 
 Important behavior:
 
-- The weekly endpoint does not scrape current data; it analyzes records already stored by onboarding and daily collection.
-- `week_start` is a Monday. The selected event window is Monday–Sunday in Asia/Kolkata.
-- The default history window is 12 previous weeks. Retrieval stays within the same target and uses only previous-week events as matches; current-week embeddings provide query vectors.
-- Input compaction shortens text and reduces retrieved examples when required. It does not intentionally drop current-week event evidence; if the payload cannot fit, input building fails.
-- A week with no eligible current-week events bypasses the LLM and produces `low_activity`.
-- LLM output is constrained to a JSON schema. The application verifies event IDs, target, time window, current-week citation, and source claims. Scores and labels are calculated by application code from verified evidence.
-- Failures are retained as run attempts and do not replace an earlier successful result. Scheduled retry is limited to retryable errors.
+- The weekly endpoint does not scrape current data; it analyzes events already stored by daily collection.
+- `week_start` is a Monday. Events are selected by `collection_date >= week_start AND collection_date < week_start + 7 days`; baseline events are excluded.
+- The LLM receives each selected event's database ID, collection date, source, and raw content. It returns leads with event IDs; every citation must belong to this exact selected-week input.
+- An empty week still calls the LLM and expects `{"leads": null}`. A non-empty week with no supported leads returns `{"leads": []}`.
+- Only lead title and description are embedded. The week date, target, and source-event IDs remain structured metadata.
+- Failures are retained as run attempts and do not replace an earlier successful lead set. Successful reruns supersede the current run for that target/week.
+- The current baseline does not use historical retrieval, input compaction, or caching; those responsibilities are outside the Weekly Lead Detector.
 - The in-process weekly lock and APScheduler are not distributed coordination: multiple server processes need deployment-level coordination to avoid duplicate jobs or API-key rate-limit contention.
 
-### 3.4 Replay and inspection
+### 3.4 Signal detection
 
-`scripts/build_weekly_input.py` prints the assembled evidence payload for a target/week. `scripts/replay_weekly.py` replays recent closed weeks for evaluation and writes a report; replay does not write weekly run/result rows, but it can create missing embeddings. The fake replay LLM is the default; `--live` enables a live weekly LLM call.
+The Signal Detector runs Monday at 04:00 Asia/Kolkata, after the 02:00 lead stage. The owner-scoped manual endpoint can also run it for a selected Monday. It requires the target's current weekly run to have succeeded; `no_events` is also a successful handoff with an empty current-lead list.
+
+1. Load the ready target, its current Kundali, and current-week leads/vectors.
+2. For each current lead vector, retrieve the top three same-target leads from the 12 preceding weeks. Only leads from each prior week's current successful lead run are eligible. PostgreSQL ranks with pgvector cosine distance; SQLite tests rank with cosine similarity.
+3. Deduplicate historical candidates across current leads and retain candidate week dates, similarities, and the current leads that retrieved them.
+4. Send the full Kundali, all current leads, and selected history to the configured LLM. A week with no leads still sends the baseline and empty current/history lists.
+5. Measure the request size using the UTF-8 byte length of the system prompt and serialized input. The byte ceiling defaults to 49,000 and must remain below 50,000; this is a conservative proxy for the agreed token cap. If trimming is needed, remove oldest historical candidates first; never drop the Kundali or current leads. If those required items do not fit, fail the run.
+6. Validate signal types, qualitative confidence/rationale, and lead IDs. Every signal cites at least one current lead. Continuation, acceleration, deceleration, and strategic-shift types require historical citations drawn from the selected candidates.
+7. Store each attempt and signal set in `signal_detection_runs` and `detected_signals`. Failed runs preserve the prior current signal set; successful reruns supersede it while retaining attempt history.
+
+If weekly processing is absent or still running at 04:00, check again every 30 minutes for three total checks ending at 05:00. A first retryable weekly failure may receive one retry; a subsequent failure skips signal detection. The signal stage does not automatically retry its own failed analysis, but manual reruns remain available.
+
+### 3.5 Replay and inspection
+
+The legacy `scripts/build_weekly_input.py` and `scripts/replay_weekly.py` exercise the prior signal-analysis pipeline, not the active lead detector. They remain for compatibility and evaluation and may create missing event embeddings.
 
 ## 4. Database design
 
@@ -203,6 +210,11 @@ erDiagram
     TARGETS ||--o{ WEEKLY_RESULTS : has_result
     WEEKLY_RUNS o|--o| WEEKLY_RESULTS : latest_success
     WEEKLY_RESULTS ||--o{ WEEKLY_SIGNALS : contains
+    TARGETS ||--o{ WEEKLY_LEAD_RUNS : attempts
+    WEEKLY_LEAD_RUNS ||--o{ WEEKLY_LEADS : contains
+    TARGETS ||--o{ WEEKLY_LEADS : stores
+    TARGETS ||--o{ SIGNAL_DETECTION_RUNS : attempts
+    SIGNAL_DETECTION_RUNS ||--o{ DETECTED_SIGNALS : contains
 
     USERS {
         int id PK
@@ -318,6 +330,57 @@ erDiagram
         json cited_event_ids
         json source_states
     }
+    WEEKLY_LEAD_RUNS {
+        int id PK
+        int target_id FK
+        date week_start_date
+        int attempt
+        string status
+        boolean is_current
+        boolean retryable
+        json input_event_ids
+        json input_json
+        json output_json
+        text raw_output
+        text error
+    }
+    WEEKLY_LEADS {
+        int id PK
+        int run_id FK
+        int target_id FK
+        date week_start_date
+        string title
+        text description
+        json source_event_ids
+        vector_or_json embedding
+        string embedding_model_id
+    }
+    SIGNAL_DETECTION_RUNS {
+        int id PK
+        int target_id FK
+        date week_start_date
+        int attempt
+        string status
+        boolean is_current
+        boolean retryable
+        json input_json
+        json output_json
+        int input_size_bytes
+        text error
+    }
+    DETECTED_SIGNALS {
+        int id PK
+        int run_id FK
+        int target_id FK
+        date week_start_date
+        string title
+        text description
+        json signal_types
+        string confidence
+        text confidence_rationale
+        json current_lead_ids
+        json historical_lead_ids
+    }
 ```
 
 The Mermaid diagram shows principal keys and relationships. Some IDs are persisted in JSON fields (for example `cited_event_ids`) rather than represented as relational foreign keys.
@@ -333,9 +396,11 @@ The Mermaid diagram shows principal keys and relationships. Some IDs are persist
 | `daily_source_checkpoints` | Current collection checkpoint per target/source; unique on `(target_id, source_type)`. |
 | `daily_source_summaries` | Per-date/per-source status, activity highlights, and ATS/blog coverage counters; unique on `(target_id, collection_date, source_type)`. |
 | `event_embeddings` | Derived vector for an event/model/text-preparation version; unique on `(event_id, model_id, prep_version)`. PostgreSQL stores `vector(256)`; SQLite uses JSON. The migration to Voyage clears incompatible prior vectors while preserving events. |
-| `weekly_runs` | Append-only attempt history for each target/week; unique on `(target_id, week_start_date, attempt)`. Stores status, retryability, model metadata, input/output, usage, rejected proposals, and error. |
-| `weekly_results` | One latest result per target/week; unique on `(target_id, week_start_date)`. Points to the latest successful run. |
-| `weekly_signals` | Verified signal records belonging to a weekly result; the result relationship cascades on deletion. Source/event references are also captured in JSON. |
+| `weekly_lead_runs` | Attempt history for each target/week; unique on `(target_id, week_start_date, attempt)`. Stores the exact input snapshot, LLM output, status, model metadata, and retryability. |
+| `weekly_leads` | One row per extracted lead, with title/description, source event IDs, Monday week date, and a 256-dimensional vector; rows cascade with their run. |
+| `signal_detection_runs` | Signal attempts for each target/week with exact input/output, model metadata, status, and current-version marker. |
+| `detected_signals` | Validated signal text/types/confidence and JSON citations of current/historical weekly lead IDs; rows cascade with their run. |
+| `weekly_runs`, `weekly_results`, `weekly_signals` | Legacy signal-analysis storage retained for compatibility; the active Weekly Lead Detector no longer writes these tables. |
 
 ### 4.3 Database deployment options
 
@@ -353,7 +418,8 @@ Alembic migrations create/update the same selected database; there is not a sepa
 | Auth | `/auth/signup`, `/auth/login`, `/auth/me` | Create account, obtain token, verify identity. |
 | Targets/Kundali | `/targets/preview`, `/targets`, `/targets/{id}`, `/targets/{id}/kundali/*` | Discover/confirm source URLs, check build state, read raw/synthesized baseline, rebuild. |
 | Daily | `/targets/{id}/daily/collect`, `/daily/events`, `/daily/summaries` | Collect sources and inspect saved events/statuses. |
-| Weekly | `/targets/{id}/weekly/run`, `/weekly`, `/weekly/{week_start}`, `/weekly/{week_start}/runs` | Run, inspect, and audit weekly analysis/results. |
+| Weekly leads | `/targets/{id}/weekly/run`, `/weekly`, `/weekly/{week_start}`, `/weekly/{week_start}/runs` | Run, inspect, and audit weekly lead extraction and stored leads. |
+| Signals | `/targets/{id}/weekly/signals/run`, `/weekly/{week_start}/signals`, `/weekly/{week_start}/signals/runs` | Run, inspect, and audit signal detection. |
 
 Target-specific endpoints require bearer authentication and enforce ownership. The interactive OpenAPI UI is provided by FastAPI at `/docs`.
 
@@ -363,7 +429,9 @@ Target-specific endpoints require bearer authentication and enforce ownership. T
 - **Weekly rate limiting is process-local.** It does not coordinate Voyage use across app replicas or unrelated clients sharing the API key.
 - **No local embedding model is installed.** Event embeddings require network access and a valid hosted Voyage API key when missing/stale vectors must be generated.
 - **Collection and analysis are distinct.** Weekly analysis reads persisted events; it does not itself fetch fresh public-source events.
-- **LLM output is not treated as ground truth.** Weekly citations are verified and scores/labels are derived by code.
+- **LLM output is not treated as ground truth.** Weekly lead and Signal Detector citations are validated against the exact selected lead sets.
+- **Weekly lead embeddings are separate from daily event embeddings.** The active weekly flow embeds only returned lead title/description text and does not retrieve historical events.
+- **Signal retrieval is candidate evidence only.** Similarity does not prove a relationship; the Signal Detector LLM may reject retrieved history and must cite only supplied current/historical lead IDs.
 - **Planned modules are not active pipeline stages.** `app/weekly/narrator/` files are empty placeholders; the weekly narrator and `app/export/pdf.py`/PDF export are not implemented. There is no frontend/dashboard implementation in the repository described by the project status.
 - **Failures remain inspectable.** Daily source failures are recorded independently in summaries. Weekly failures are recorded as attempts, with retryability used by scheduled retry logic.
 
@@ -375,6 +443,6 @@ Target-specific endpoints require bearer authentication and enforce ownership. T
 - Target setup: `app/targets/routes.py`, `app/targets/onboarding.py`, `app/kundali/synthesis.py`
 - Daily flow: `app/events/routes.py`, `app/daily/collectors.py`, `app/daily/fetchers/`
 - Embeddings: `app/embeddings/model.py`, `app/embeddings/service.py`
-- Weekly flow: `app/weekly/routes.py`, `app/weekly/detector.py`, `app/weekly/input_builder.py`
+- Weekly flow: `app/weekly/routes.py`, `app/weekly/detector.py`, `app/weekly/lead_extraction.py`
 - Schedulers: `app/scheduler/jobs.py`
 - Schema history: `alembic/versions/`

@@ -1,6 +1,6 @@
 # RAVN — Implementation Guide
 
-This guide describes the current backend implementation. The frontend/dashboard, LangGraph narrator, and PDF export remain planned. The backend weekly signal detector is implemented.
+This guide describes the current backend implementation. The Weekly Lead Detector and baseline Signal Detector are implemented; the frontend/dashboard, LangGraph narrator, and PDF export remain planned.
 
 ## Repository Structure
 
@@ -12,8 +12,8 @@ app/
   daily/         daily collector and GitHub/ATS/blog/web-social fetchers
   events/        event/source-summary models and daily APIs
   embeddings/    hosted embedding client, text preparation, persistence service
-  weekly/        config, windows, coverage, counts, retrieval, input, LLM,
-                 verification, scoring, persistence, replay, routes, detector
+  weekly/        collection-week lead extraction, citation validation,
+                 lead vector persistence, legacy signal helpers, routes
   scheduler/     daily and weekly APScheduler jobs plus recovery/retries
   db/            SQLAlchemy engine/session and declarative base
   llm/           existing multi-provider LLM client
@@ -48,7 +48,9 @@ The Voyage client is paced for the free tier without a payment method: at most 3
 | Variable | Default | Purpose |
 |---|---:|---|
 | `RAVN_WEEKLY_WEEK_START` | `monday` | Fixed Monday week boundary |
-| `RAVN_WEEKLY_SCHEDULE_HOUR` / `MINUTE` | `3` / `0` | Monday run time in `Asia/Kolkata` |
+| `RAVN_WEEKLY_SCHEDULE_HOUR` / `MINUTE` | `2` / `0` | Monday run time in `Asia/Kolkata` |
+| `RAVN_WEEKLY_SIGNAL_SCHEDULE_HOUR` | `4` | Monday Signal Detector start time in `Asia/Kolkata` |
+| `RAVN_WEEKLY_SIGNAL_INPUT_BYTE_BUDGET` | `49000` | Conservative UTF-8 byte ceiling; must remain below 50,000 |
 | `RAVN_WEEKLY_TIMEZONE` | `Asia/Kolkata` | Calendar and scheduler timezone |
 | `RAVN_WEEKLY_HISTORY_WEEKS` | `12` | Historical retrieval/count window |
 | `RAVN_WEEKLY_HALF_LIFE_WEEKS` | `2.0` | Reported age weight; does not change retrieval ranking |
@@ -65,11 +67,13 @@ The Voyage client is paced for the free tier without a payment method: at most 3
 | `RAVN_WEEKLY_PREP_VERSION` | `voyage-document-v1` | Version of source text and document-mode embedding preparation |
 | `VOYAGE_API_KEY` | required for embeddings | MongoDB Atlas model API key, sent as a Bearer token |
 | `VOYAGE_EMBEDDING_PROVIDER_ENDPOINT` | `https://ai.mongodb.com/v1/embeddings` | Optional Atlas endpoint override; existing `ENDPOINT` is accepted as an alias |
-| `RAVN_WEEKLY_RETRY_ATTEMPTS` | `6` | Scheduled retries after retryable failure |
+| `RAVN_WEEKLY_RETRY_ATTEMPTS` | `1` | Scheduled retries after retryable failure |
 
 The environment variable prefix is `RAVN_WEEKLY_` followed by the configuration field name uppercased (for example `RAVN_WEEKLY_WEEKLY_LLM_MODEL`). `MONGODB_URI`, `MONGODB_USERNAME`, and `MONGODB_PASSWORD` are not used for embedding calls; the model API key authenticates directly with Atlas's embeddings endpoint. `DATABASE_URL` continues to point to Supabase. The replay command uses a fake no-signal LLM by default, but still calls Voyage when it needs to create embeddings; `--live` additionally enables the Groq model call.
 
-Before any PostgreSQL embedding work, RAVN checks that `event_embeddings.embedding` is `vector(256)`. If the table or dimension does not match, embedding stops before calling Voyage and weekly runs report a non-retryable, actionable schema error. Apply `python -m alembic upgrade head` to the same database selected by `DATABASE_URL`; the 384-to-256 migration removes incompatible derived vectors but preserves event records. Missing vectors are recreated through the hosted Voyage API as needed. SQLite tests skip this PostgreSQL-specific preflight.
+The history, retrieval, coverage, compaction, and signal-scoring settings in the table are retained for legacy weekly-analysis helpers and replay tooling. They do not affect the active Weekly Lead Detector. The Signal Detector uses its own fixed 12-week retrieval horizon and top-three-per-current-lead rule, plus `signal_input_byte_budget`.
+
+Before PostgreSQL daily event-embedding work, RAVN checks that `event_embeddings.embedding` is `vector(256)`. If the table or dimension does not match, embedding stops before calling Voyage and the daily embedding service reports a non-retryable, actionable schema error. Apply `python -m alembic upgrade head` to the same database selected by `DATABASE_URL`; the 384-to-256 migration removes incompatible derived vectors but preserves event records. Missing event vectors are recreated through the hosted Voyage API as needed. Weekly lead vectors use the separate `weekly_leads.embedding` column. SQLite tests skip this PostgreSQL-specific preflight.
 
 Voyage requests authenticate with `Authorization: Bearer <VOYAGE_API_KEY>`. Provider errors are returned without response bodies or credentials: 401/403 indicate a key or permission issue, 429 indicates a possible rate/quota limit, and network/429/5xx errors are retryable.
 
@@ -83,31 +87,50 @@ After the scheduler starts, startup catch-up runs in a background thread for rec
 
 GitHub daily collection currently stores commits. Pull requests and dependency-change events remain in the broader product scope and are not implemented.
 
-## Weekly Analysis Pipeline
+## Weekly Lead Detector
 
-The week is Monday through Sunday in Asia/Kolkata. The scheduled job runs Monday at 03:00 for the last closed week. Manual API runs can select any Monday. Each target/week has one latest successful result and a separate row for every attempt.
+The Weekly Lead Detector handles one target and one Monday–Sunday collection week. It runs on Monday at 02:00 Asia/Kolkata for the last closed week; the owner-scoped manual endpoint remains available for testing. It selects `events` by `collection_date >= Monday AND collection_date < next Monday` and excludes `is_baseline=true`. It does not retrieve prior weeks or include the Kundali.
 
-1. Embed missing or changed non-baseline events locally. The daily collection path also attempts embeddings after collection; failures do not fail collection.
-2. Compile all non-baseline current-week events, source activity/coverage, exact per-source counts for this week and the prior 12 weeks, and a separate Kundali baseline context.
-3. Retrieve same-target, non-baseline events from up to 12 earlier weeks. Search ranks by cosine similarity only; age and a two-week half-life weight are separate metadata. PostgreSQL uses pgvector; SQLite uses exact Python cosine.
-4. Compact the serialized input within the configured estimate, preserving all current-week events. If it still exceeds budget, fail explicitly.
-5. Ask the pinned Groq model for a summary, limitations, and signal proposals with source claims and event IDs. Weekly calls disable provider fallback. Invalid JSON/schema responses receive bounded correction retries; truncation and provider errors fail visibly.
-6. Verify citations against the event table: target, window, baseline flag, claimed source, duplicate IDs, and at least one current-week citation. Record rejected proposals and source-claim mismatches.
-7. Compute source scores and signal labels in code. A supported configured source scores 1; a complete source with no cited support scores 0; a partial/unavailable source scores 0.5; an unconfigured source scores 0 and is excluded from configured-source count. The total is a 0–4 evidence score, not a probability. A spike has current-week cited support from two or more sources; a trend has citations in three or more distinct weeks; otherwise a signal is isolated.
-8. Persist the attempt, full input/output audit data, result summary, exact counts, source states, and verified signals. A failed attempt never replaces the previous successful result. Zero-event and no-verified-signal weeks get deterministic nonblank summaries.
+1. Save a run attempt and snapshot the selected event IDs, collection dates, source names, and `raw_content`.
+2. Send the complete selected-week snapshot to the configured weekly LLM. Require JSON in the form `{"leads":[{"title":"...","description":"...","source_event_ids":[1]}]}`. Every cited ID must belong to this exact input.
+3. For an empty week, still call the LLM and require `{"leads":null}`. Store the successful `no_events` attempt, but create no lead rows or vectors. A non-empty week with no leads uses `{"leads":[]}`.
+4. Embed each lead's `title + newline + description` with the hosted Voyage model. Dates, target IDs, and source-event IDs are stored as metadata, not embedded.
+5. In one database transaction, store leads/vectors and mark the new successful run current. A failed run leaves the previous successful lead set current. A successful rerun supersedes the earlier current run for that target/week.
 
-The weekly process lock and APScheduler are process-local. Retry delays are 10, 30, 60, 120, 240, and 240 minutes. Startup recovery waits for daily catch-up and retries the last closed week only when collection exists and there is no success or terminal nonretryable failure.
+There is no weekly input compaction or cache in this baseline. Oversized input, invalid JSON, invalid citations, provider errors, or embedding errors are recorded as explicit failures. The process lock and APScheduler are process-local. A single retry is scheduled after retryable failures; startup recovery also processes the last closed week even when there were no daily events, so the empty-week contract is honored.
 
 ### Weekly API
 
 All routes require authentication and enforce target ownership:
 
 - `POST /targets/{target_id}/weekly/run?week_start=YYYY-MM-DD` — run a Monday-start week; defaults to the last closed week.
-- `GET /targets/{target_id}/weekly` — list saved weekly results.
-- `GET /targets/{target_id}/weekly/{week_start}` — result and verified signals.
+- `GET /targets/{target_id}/weekly` — list each week's current lead run.
+- `GET /targets/{target_id}/weekly/{week_start}` — current run and leads.
 - `GET /targets/{target_id}/weekly/{week_start}/runs?include_input=true` — attempt history; full audit payload is optional.
 
-### Replay and inspection
+## Signal Detector
+
+The Signal Detector is a separate stage scheduled Monday at 04:00 Asia/Kolkata. It starts only when the target's current weekly run for the selected week succeeded (`succeeded` or `no_events`) and its lead set is current. At 04:00 it checks the weekly handoff; if weekly processing is absent or still running, it checks again every 30 minutes, for three total checks ending at 05:00. If the first weekly attempt failed retryably, the handoff makes one weekly retry; if that does not succeed, signal detection is skipped. The signal stage itself has no automatic retry, but can be manually rerun.
+
+History retrieval is scoped by target ID. The current Kundali rebuild endpoint updates the Kundali in place without clearing the target's collected events or weekly lead history, so a same-ID rebuild can still retrieve pre-rebuild leads. A full-history reset on that endpoint is not part of this Signal Detector implementation.
+
+1. Load the ready target, its current Kundali, and its current lead run for the selected Monday. A missing successful lead run or Kundali prevents analysis.
+2. Load all current-week leads. For each lead vector, retrieve the three nearest same-target leads from the 12 weeks before `week_start`; never retrieve the current week as history. PostgreSQL uses pgvector cosine distance; SQLite tests rank cosine similarity in Python. Historical rows are restricted to the active successful weekly-lead run for each prior week.
+3. Deduplicate historical candidates returned for multiple current leads. Keep their IDs, Monday dates, similarity values, and the current-lead IDs that retrieved them. Similarity indicates candidate relevance, not proof.
+4. Send the Kundali, all current leads, and retrieved historical candidates to the configured LLM. If there are no current leads, still send the baseline with empty current/history lists.
+5. Measure the request size as a conservative UTF-8 byte count, including the system prompt. Keep it below the configured byte ceiling (default 49,000, below 50,000 bytes) as a conservative proxy for the agreed below-50,000-token cap. If needed, drop historical candidates from older weeks first; preserve the Kundali and current leads. If those alone exceed the budget, fail visibly.
+6. Require signals with a title, description, allowed type(s), qualitative confidence and rationale, at least one current lead ID, and optional historical lead IDs. Validate all citations against the exact current leads and retrieved candidates. `continuation`, `acceleration`, `deceleration`, and `strategic_shift` require historical citations. Signals remain LLM judgments; confidence is not a calibrated probability.
+7. Store each attempt and validated signals in `signal_detection_runs` and `detected_signals`. Failed attempts do not replace the previous current signal set. A successful rerun supersedes the earlier current run while retaining its history.
+
+Owner-scoped signal endpoints:
+
+- `POST /targets/{target_id}/weekly/signals/run?week_start=YYYY-MM-DD` — manually run detection; defaults to the last closed week and requires successful weekly leads.
+- `GET /targets/{target_id}/weekly/{week_start}/signals` — current signal set and no-match reason.
+- `GET /targets/{target_id}/weekly/{week_start}/signals/runs?include_input=true` — attempt history and optional evidence payload.
+
+### Legacy replay and inspection
+
+These scripts exercise the earlier weekly signal-analysis pipeline, not the active lead endpoint. They remain available for compatibility and evaluation of the legacy helpers.
 
 - `python scripts/build_weekly_input.py --target N --week YYYY-MM-DD` prints an assembled input.
 - `python scripts/replay_weekly.py --target N --weeks K` replays the most recent closed weeks and writes a Markdown report. The default fake LLM is not a quality evaluator; it checks pipeline/report mechanics without an LLM call. `--live` uses the configured Groq model. Replay applies a week-end cutoff to events, summaries, and Kundali snapshots and does not write weekly run/result rows. It may call the hosted Voyage API and persist missing vectors.
@@ -123,9 +146,11 @@ All routes require authentication and enforce target ownership:
 | `daily_source_checkpoints` | Per-source collection state and first-snapshot markers |
 | `daily_source_summaries` | Per-target/date/source status, highlight, counts, and ATS/blog coverage breakdown |
 | `event_embeddings` | Versioned 256-dimensional Voyage vector per event/model/preparation version |
-| `weekly_runs` | Every attempt, status/retry metadata, models, tokens, input/output, and rejection audit |
-| `weekly_results` | Latest successful result and exact counts per target/week |
-| `weekly_signals` | Verified signal descriptions, citations, scores, source states, labels, and claim audit |
+| `weekly_lead_runs` | Every weekly lead extraction attempt, input/output, status, and model metadata |
+| `weekly_leads` | Lead text, citations, Monday week date, and 256-dimensional vector |
+| `signal_detection_runs` | Signal extraction attempts, evidence input, model metadata, status, and retry information |
+| `detected_signals` | Validated signal text/types/confidence and cited current/historical weekly lead IDs |
+| `weekly_runs`, `weekly_results`, `weekly_signals` | Legacy signal-analysis tables; retained but no longer written by the active weekly detector |
 
 Alembic manages schema changes. PostgreSQL is the active cloud database configured in the owner's ignored `.env`; SQLite migrations are also kept working and exercised on temporary copies. Apply `python -m alembic upgrade head` to the same database used by the app before deploying the 256-dimensional hosted Voyage embeddings. The transition migration deletes only incompatible derived vectors; events remain and are re-embedded on demand. Never run destructive migration or data-copy commands against the original local `ravn.db`.
 
