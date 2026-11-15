@@ -153,7 +153,6 @@ class WeeklyLead(Base):
     )
     week_start_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
     lead_index: Mapped[int] = mapped_column(Integer, nullable=False)
-    title: Mapped[str] = mapped_column(Text, nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
     source_event_ids: Mapped[list[int]] = mapped_column(JSON, nullable=False)
     embedding: Mapped[list[float]] = mapped_column(

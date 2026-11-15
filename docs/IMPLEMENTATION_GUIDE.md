@@ -31,7 +31,7 @@ scripts/         migration, embedding backfill, input inspection, weekly replay
 | Persistence | SQLAlchemy, Alembic; SQLite supported, current deployment uses the existing Supabase PostgreSQL database |
 | Vector search | pgvector on PostgreSQL; exact Python cosine search for SQLite/tests |
 | Embeddings | MongoDB Atlas-hosted Voyage `voyage-4-lite`, 256 dimensions, via the REST API |
-| Weekly LLM | Pinned `openai/gpt-oss-120b` through the existing Groq client, provider fallback disabled for weekly calls |
+| Weekly LLM | Pinned model through OpenRouter by default; provider fallback disabled for detector calls |
 | Other LLM calls | Kundali synthesis and onboarding use the existing multi-provider routing/fallback behavior |
 | Scheduling | In-process APScheduler with Asia/Kolkata timezone |
 | Collection | httpx, BeautifulSoup, feedparser, trafilatura; source-specific public APIs where available |
@@ -41,7 +41,7 @@ The project owner uses an existing free-tier Supabase project because Docker is 
 
 ## Configuration
 
-Generic settings include `DATABASE_URL`, `JWT_SECRET_KEY`, optional `GITHUB_TOKEN`, and provider keys such as `GROQ_API_KEY`. Weekly settings are read from environment variables named `RAVN_WEEKLY_<FIELD>`; defaults are defined in `app/weekly/config.py`.
+Generic settings include `DATABASE_URL`, `JWT_SECRET_KEY`, optional `GITHUB_TOKEN`, `OPENROUTER_API_KEY` for active detector calls, and provider keys such as `GROQ_API_KEY` for Kundali synthesis. Weekly settings are read from environment variables named `RAVN_WEEKLY_<FIELD>`; defaults are defined in `app/weekly/config.py`.
 
 The Voyage client is paced for the free tier without a payment method: at most 3 requests and 10,000 estimated tokens per rolling minute. It splits inputs into requests capped at 8,000 estimated tokens and 64 items, then adjusts reservations using provider-reported token usage when available. Estimation uses UTF-8 bytes plus fixed overhead instead of a local tokenizer, so it is approximate. Pacing is process-local; multiple application processes or other clients using the same API key are not coordinated. Persistent HTTP 429 responses can indicate account quota exhaustion or a different organization limit; check the Atlas dashboard.
 
@@ -50,6 +50,7 @@ The Voyage client is paced for the free tier without a payment method: at most 3
 | `RAVN_WEEKLY_WEEK_START` | `monday` | Fixed Monday week boundary |
 | `RAVN_WEEKLY_SCHEDULE_HOUR` / `MINUTE` | `2` / `0` | Monday run time in `Asia/Kolkata` |
 | `RAVN_WEEKLY_SIGNAL_SCHEDULE_HOUR` | `4` | Monday Signal Detector start time in `Asia/Kolkata` |
+| `RAVN_WEEKLY_WEEKLY_INPUT_BYTE_BUDGET` | `48000` | Per-request weekly LLM input ceiling including prompt and overhead |
 | `RAVN_WEEKLY_SIGNAL_INPUT_BYTE_BUDGET` | `49000` | Conservative UTF-8 byte ceiling; must remain below 50,000 |
 | `RAVN_WEEKLY_TIMEZONE` | `Asia/Kolkata` | Calendar and scheduler timezone |
 | `RAVN_WEEKLY_HISTORY_WEEKS` | `12` | Historical retrieval/count window |
@@ -62,14 +63,15 @@ The Voyage client is paced for the free tier without a payment method: at most 3
 | `RAVN_WEEKLY_MAX_OUTPUT_TOKENS` / `MAX_SIGNALS` | `4000` / `8` | LLM response bounds |
 | `RAVN_WEEKLY_UNVERIFIED_THRESHOLD` | `0.20` | ATS/blog missed-candidate share marking coverage partial |
 | `RAVN_WEEKLY_TREND_MIN_WEEKS` | `3` | Distinct citation weeks required for a trend label |
-| `RAVN_WEEKLY_WEEKLY_LLM_MODEL` | `openai/gpt-oss-120b` | Pinned weekly model (field name: `weekly_llm_model`) |
+| `RAVN_WEEKLY_WEEKLY_LLM_PROVIDER` | `openrouter` | Explicit provider for active weekly lead and signal extraction |
+| `RAVN_WEEKLY_WEEKLY_LLM_MODEL` | `openai/gpt-oss-120b` | Pinned model requested from the selected provider |
 | `RAVN_WEEKLY_EMBED_MODEL_ID` | `voyage-4-lite` | Voyage model identifier |
 | `RAVN_WEEKLY_PREP_VERSION` | `voyage-document-v1` | Version of source text and document-mode embedding preparation |
 | `VOYAGE_API_KEY` | required for embeddings | MongoDB Atlas model API key, sent as a Bearer token |
 | `VOYAGE_EMBEDDING_PROVIDER_ENDPOINT` | `https://ai.mongodb.com/v1/embeddings` | Optional Atlas endpoint override; existing `ENDPOINT` is accepted as an alias |
 | `RAVN_WEEKLY_RETRY_ATTEMPTS` | `1` | Scheduled retries after retryable failure |
 
-The environment variable prefix is `RAVN_WEEKLY_` followed by the configuration field name uppercased (for example `RAVN_WEEKLY_WEEKLY_LLM_MODEL`). `MONGODB_URI`, `MONGODB_USERNAME`, and `MONGODB_PASSWORD` are not used for embedding calls; the model API key authenticates directly with Atlas's embeddings endpoint. `DATABASE_URL` continues to point to Supabase. The replay command uses a fake no-signal LLM by default, but still calls Voyage when it needs to create embeddings; `--live` additionally enables the Groq model call.
+The environment variable prefix is `RAVN_WEEKLY_` followed by the configuration field name uppercased (for example `RAVN_WEEKLY_WEEKLY_LLM_MODEL`). Active weekly lead and signal extraction explicitly use the configured provider (default `openrouter`) with fallback disabled. `OPENROUTER_API_KEY` is required for those calls; `GROQ_API_KEY` remains used by Kundali synthesis. `MONGODB_URI`, `MONGODB_USERNAME`, and `MONGODB_PASSWORD` are not used for embedding calls; the model API key authenticates directly with Atlas's embeddings endpoint. `DATABASE_URL` continues to point to Supabase. The replay command uses a fake no-signal LLM by default, but still calls Voyage when it needs to create embeddings; `--live` uses its legacy configured provider flow.
 
 The history, retrieval, coverage, compaction, and signal-scoring settings in the table are retained for legacy weekly-analysis helpers and replay tooling. They do not affect the active Weekly Lead Detector. The Signal Detector uses its own fixed 12-week retrieval horizon and top-three-per-current-lead rule, plus `signal_input_byte_budget`.
 
@@ -92,18 +94,18 @@ GitHub daily collection currently stores commits. Pull requests and dependency-c
 The Weekly Lead Detector handles one target and one Monday–Sunday collection week. It runs on Monday at 02:00 Asia/Kolkata for the last closed week; the owner-scoped manual endpoint remains available for testing. It selects `events` by `collection_date >= Monday AND collection_date < next Monday` and excludes `is_baseline=true`. It does not retrieve prior weeks or include the Kundali.
 
 1. Save a run attempt and snapshot the selected event IDs, collection dates, source names, and `raw_content`.
-2. Send the complete selected-week snapshot to the configured weekly LLM. Require JSON in the form `{"leads":[{"title":"...","description":"...","source_event_ids":[1]}]}`. Every cited ID must belong to this exact input.
+2. Send every event in the complete selected-week snapshot to the configured weekly LLM, splitting sequentially into requests under the configured byte ceiling when needed. Require JSON in the form `{"leads":[{"description":"...","source_event_ids":[1]}]}`. Every cited ID must belong to that batch's input. Exact duplicate descriptions across batches are consolidated and citations combined; no event content is discarded. The prompt asks the model to prioritize the most business-significant leads and return fewer concise leads rather than exceed its output-token limit.
 3. For an empty week, still call the LLM and require `{"leads":null}`. Store the successful `no_events` attempt, but create no lead rows or vectors. A non-empty week with no leads uses `{"leads":[]}`.
-4. Embed each lead's `title + newline + description` with the hosted Voyage model. Dates, target IDs, and source-event IDs are stored as metadata, not embedded.
+4. Embed each lead's description with the hosted Voyage model. Dates, target IDs, and source-event IDs are stored as metadata, not embedded.
 5. In one database transaction, store leads/vectors and mark the new successful run current. A failed run leaves the previous successful lead set current. A successful rerun supersedes the earlier current run for that target/week.
 
-There is no weekly input compaction or cache in this baseline. Oversized input, invalid JSON, invalid citations, provider errors, or embedding errors are recorded as explicit failures. The process lock and APScheduler are process-local. A single retry is scheduled after retryable failures; startup recovery also processes the last closed week even when there were no daily events, so the empty-week contract is honored.
+There is no weekly input compaction or cache. Batches include the full system prompt and use a conservative 48,000-byte default ceiling. If one event cannot fit by itself, the run fails without omitting or truncating it. Invalid JSON, invalid citations, provider errors, or embedding errors are recorded as explicit failures. Provider 4xx responses are non-retryable. Failed runs return HTTP 502 with the saved attempt details rather than a success-shaped 200. The process lock and APScheduler are process-local. A single retry is scheduled after retryable failures; startup recovery also processes the last closed week even when there were no daily events, so the empty-week contract is honored.
 
 ### Weekly API
 
 All routes require authentication and enforce target ownership:
 
-- `POST /targets/{target_id}/weekly/run?week_start=YYYY-MM-DD` — run a Monday-start week; defaults to the last closed week.
+- `POST /targets/{target_id}/weekly/run?week_start=YYYY-MM-DD` — run a Monday-start week; defaults to the last closed week. The response includes raw `llm_response` and `error` fields; `error` is `null` on success, and `llm_response` is `null` when the model did not return text.
 - `GET /targets/{target_id}/weekly` — list each week's current lead run.
 - `GET /targets/{target_id}/weekly/{week_start}` — current run and leads.
 - `GET /targets/{target_id}/weekly/{week_start}/runs?include_input=true` — attempt history; full audit payload is optional.
@@ -133,7 +135,7 @@ Owner-scoped signal endpoints:
 These scripts exercise the earlier weekly signal-analysis pipeline, not the active lead endpoint. They remain available for compatibility and evaluation of the legacy helpers.
 
 - `python scripts/build_weekly_input.py --target N --week YYYY-MM-DD` prints an assembled input.
-- `python scripts/replay_weekly.py --target N --weeks K` replays the most recent closed weeks and writes a Markdown report. The default fake LLM is not a quality evaluator; it checks pipeline/report mechanics without an LLM call. `--live` uses the configured Groq model. Replay applies a week-end cutoff to events, summaries, and Kundali snapshots and does not write weekly run/result rows. It may call the hosted Voyage API and persist missing vectors.
+- `python scripts/replay_weekly.py --target N --weeks K` replays the most recent closed weeks and writes a Markdown report. The default fake LLM is not a quality evaluator; it checks pipeline/report mechanics without an LLM call. `--live` uses the legacy replay provider configuration. Replay applies a week-end cutoff to events, summaries, and Kundali snapshots and does not write weekly run/result rows. It may call the hosted Voyage API and persist missing vectors.
 - `python scripts/embed_backfill.py --target N` resumes embedding backfill in batches.
 
 ## Data Model Summary
@@ -147,7 +149,7 @@ These scripts exercise the earlier weekly signal-analysis pipeline, not the acti
 | `daily_source_summaries` | Per-target/date/source status, highlight, counts, and ATS/blog coverage breakdown |
 | `event_embeddings` | Versioned 256-dimensional Voyage vector per event/model/preparation version |
 | `weekly_lead_runs` | Every weekly lead extraction attempt, input/output, status, and model metadata |
-| `weekly_leads` | Lead text, citations, Monday week date, and 256-dimensional vector |
+| `weekly_leads` | Lead descriptions, citations, Monday week date, and 256-dimensional vector |
 | `signal_detection_runs` | Signal extraction attempts, evidence input, model metadata, status, and retry information |
 | `detected_signals` | Validated signal text/types/confidence and cited current/historical weekly lead IDs |
 | `weekly_runs`, `weekly_results`, `weekly_signals` | Legacy signal-analysis tables; retained but no longer written by the active weekly detector |

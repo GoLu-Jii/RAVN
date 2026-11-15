@@ -66,3 +66,6 @@ app.include_router(auth_router, prefix="/auth", tags=["1. Authentication"])
 app.include_router(targets_router, prefix="/targets", tags=["2. Targets & Kundali"])
 app.include_router(daily_router)
 app.include_router(weekly_router)
+'''
+ok
+'''

@@ -25,6 +25,7 @@ class WeeklyConfig:
     schedule_hour: int = 2
     schedule_minute: int = 0
     signal_schedule_hour: int = 4
+    weekly_input_byte_budget: int = 48000
     signal_input_byte_budget: int = 49000
     timezone: str = "Asia/Kolkata"
     history_weeks: int = 12
@@ -39,6 +40,7 @@ class WeeklyConfig:
     max_signals: int = 8
     unverified_threshold: float = 0.20
     trend_min_weeks: int = 3
+    weekly_llm_provider: str = "openrouter"
     weekly_llm_model: str = "openai/gpt-oss-120b"
     embed_model_id: str = "voyage-4-lite"
     prep_version: str = "voyage-document-v1"
@@ -54,11 +56,15 @@ class WeeklyConfig:
             or not 0 <= self.signal_schedule_hour <= 23
         ):
             raise ValueError("Schedule hour/minute are out of range.")
-        for name in ("history_weeks", "max_queries", "example_k", "count_k", "input_token_budget", "signal_input_byte_budget", "max_output_tokens", "max_signals", "retry_attempts"):
+        for name in ("history_weeks", "max_queries", "example_k", "count_k", "input_token_budget", "weekly_input_byte_budget", "signal_input_byte_budget", "max_output_tokens", "max_signals", "retry_attempts"):
             if getattr(self, name) < 1:
                 raise ValueError(f"{name} must be at least 1.")
+        if self.weekly_input_byte_budget >= 50000:
+            raise ValueError("weekly_input_byte_budget must remain below 50000.")
         if self.signal_input_byte_budget >= 50000:
             raise ValueError("signal_input_byte_budget must remain below 50000.")
+        if self.weekly_llm_provider not in {"openrouter", "groq", "gemini"}:
+            raise ValueError("weekly_llm_provider must be openrouter, groq, or gemini.")
         if self.half_life_weeks <= 0 or self.trend_min_weeks < 2:
             raise ValueError("Half-life must be positive and a trend must span at least two weeks.")
         if not 0 <= self.retrieval_budget_share <= 1:

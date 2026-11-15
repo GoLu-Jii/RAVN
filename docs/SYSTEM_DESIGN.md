@@ -109,7 +109,7 @@ sequenceDiagram
     API->>Fetch: Collect public-source changes (manual daily endpoint)
     Note over API,Embed: Scheduled daily jobs also embed after collection; manual daily collection does not.
     API->>LLM: Extract leads from selected-week events, including empty weeks
-    API->>Embed: Embed each returned lead's title and description
+    API->>Embed: Embed each returned lead's description
     API-->>U: Collection report or weekly run summary
 ```
 
@@ -149,10 +149,10 @@ flowchart TD
     C -- no --> X
     C -- yes --> D[Select events by collection_date for Monday-Sunday]
     D --> E[Exclude baseline events and snapshot input]
-    E --> F[Call configured LLM, including empty weeks]
-    F --> G[Validate JSON and source event IDs]
+    E --> F[Split full snapshot into bounded batches; empty week is one empty batch]
+    F --> G[Call configured LLM per batch and validate citations]
     G --> H{Leads returned?}
-    H -- yes --> I[Embed title and description]
+    H -- yes --> I[Embed description]
     H -- no / null --> J[Create no lead vectors]
     I --> K[Atomically persist lead run and vectors]
     J --> K
@@ -160,18 +160,19 @@ flowchart TD
     G -- invalid / provider error --> Z[Record failed attempt; retain prior current run]
     I -- embedding error --> Z
     L --> M[Return run status and lead count]
-    Z --> N[Return failed status and retryability]
+    Z --> N[Return HTTP 502 with failed status and retryability]
 ```
 
 Important behavior:
 
 - The weekly endpoint does not scrape current data; it analyzes events already stored by daily collection.
 - `week_start` is a Monday. Events are selected by `collection_date >= week_start AND collection_date < week_start + 7 days`; baseline events are excluded.
-- The LLM receives each selected event's database ID, collection date, source, and raw content. It returns leads with event IDs; every citation must belong to this exact selected-week input.
+- The LLM receives every selected event's database ID, collection date, source, and complete raw content. Large snapshots are split into sequential requests capped by a conservative 48,000-byte budget; no event is dropped. It returns concise lead descriptions with event IDs; every citation is validated against that batch's input. Exact duplicate descriptions are consolidated across batches with their citations combined. The prompt prioritizes business significance and asks the model to return fewer complete leads rather than truncate when output tokens are limited.
 - An empty week still calls the LLM and expects `{"leads": null}`. A non-empty week with no supported leads returns `{"leads": []}`.
-- Only lead title and description are embedded. The week date, target, and source-event IDs remain structured metadata.
+- Only the lead description is embedded. The week date, target, and source-event IDs remain structured metadata.
 - Failures are retained as run attempts and do not replace an earlier successful lead set. Successful reruns supersede the current run for that target/week.
-- The current baseline does not use historical retrieval, input compaction, or caching; those responsibilities are outside the Weekly Lead Detector.
+- The current baseline does not use historical retrieval, input compaction, or caching; those responsibilities are outside the Weekly Lead Detector. Batch boundaries can limit cross-event context. An event that cannot fit alone fails explicitly.
+- Persisted failed attempts return HTTP 502; provider 4xx responses are marked non-retryable.
 - The in-process weekly lock and APScheduler are not distributed coordination: multiple server processes need deployment-level coordination to avoid duplicate jobs or API-key rate-limit contention.
 
 ### 3.4 Signal detection
@@ -322,7 +323,6 @@ erDiagram
     WEEKLY_SIGNALS {
         int id PK
         int result_id FK
-        string title
         text description
         float score
         json sources
@@ -349,7 +349,6 @@ erDiagram
         int run_id FK
         int target_id FK
         date week_start_date
-        string title
         text description
         json source_event_ids
         vector_or_json embedding
@@ -397,7 +396,7 @@ The Mermaid diagram shows principal keys and relationships. Some IDs are persist
 | `daily_source_summaries` | Per-date/per-source status, activity highlights, and ATS/blog coverage counters; unique on `(target_id, collection_date, source_type)`. |
 | `event_embeddings` | Derived vector for an event/model/text-preparation version; unique on `(event_id, model_id, prep_version)`. PostgreSQL stores `vector(256)`; SQLite uses JSON. The migration to Voyage clears incompatible prior vectors while preserving events. |
 | `weekly_lead_runs` | Attempt history for each target/week; unique on `(target_id, week_start_date, attempt)`. Stores the exact input snapshot, LLM output, status, model metadata, and retryability. |
-| `weekly_leads` | One row per extracted lead, with title/description, source event IDs, Monday week date, and a 256-dimensional vector; rows cascade with their run. |
+| `weekly_leads` | One row per extracted lead, with description, source event IDs, Monday week date, and a 256-dimensional vector; rows cascade with their run. |
 | `signal_detection_runs` | Signal attempts for each target/week with exact input/output, model metadata, status, and current-version marker. |
 | `detected_signals` | Validated signal text/types/confidence and JSON citations of current/historical weekly lead IDs; rows cascade with their run. |
 | `weekly_runs`, `weekly_results`, `weekly_signals` | Legacy signal-analysis storage retained for compatibility; the active Weekly Lead Detector no longer writes these tables. |
@@ -430,7 +429,7 @@ Target-specific endpoints require bearer authentication and enforce ownership. T
 - **No local embedding model is installed.** Event embeddings require network access and a valid hosted Voyage API key when missing/stale vectors must be generated.
 - **Collection and analysis are distinct.** Weekly analysis reads persisted events; it does not itself fetch fresh public-source events.
 - **LLM output is not treated as ground truth.** Weekly lead and Signal Detector citations are validated against the exact selected lead sets.
-- **Weekly lead embeddings are separate from daily event embeddings.** The active weekly flow embeds only returned lead title/description text and does not retrieve historical events.
+- **Weekly lead embeddings are separate from daily event embeddings.** The active weekly flow embeds only returned lead descriptions and does not retrieve historical events.
 - **Signal retrieval is candidate evidence only.** Similarity does not prove a relationship; the Signal Detector LLM may reject retrieved history and must cite only supplied current/historical lead IDs.
 - **Planned modules are not active pipeline stages.** `app/weekly/narrator/` files are empty placeholders; the weekly narrator and `app/export/pdf.py`/PDF export are not implemented. There is no frontend/dashboard implementation in the repository described by the project status.
 - **Failures remain inspectable.** Daily source failures are recorded independently in summaries. Weekly failures are recorded as attempts, with retryability used by scheduled retry logic.
