@@ -41,7 +41,7 @@ class FakeLLM:
             raise self.error
         return SimpleNamespace(
             content=json.dumps(self.content),
-            provider="groq",
+            provider="openrouter",
             model="openai/gpt-oss-120b",
         )
 
@@ -238,6 +238,7 @@ class SignalDetectorTests(unittest.TestCase):
         result, llm = self.run_with(output)
 
         payload = json.loads(llm.calls[0]["messages"][1]["content"])
+        self.assertEqual(llm.calls[0]["provider"], "openrouter")
         self.assertEqual(result["status"], "succeeded")
         self.assertEqual(payload["kundali"]["tech_stack"], {"languages": ["Python"]})
         self.assertEqual(payload["current_leads"][0]["id"], self.current_lead.id)

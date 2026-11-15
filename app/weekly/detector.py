@@ -13,7 +13,7 @@ from app.weekly.lead_extraction import (
     PROMPT_VERSION,
     WeeklyLeadExtractionError,
     build_weekly_lead_input,
-    extract_weekly_leads,
+    extract_weekly_leads_batched,
 )
 from app.weekly.models import WeeklyLeadRun
 from app.weekly.repository import (
@@ -83,7 +83,7 @@ def run_weekly_analysis(
         )
         run_id = run.id
 
-        extraction = extract_weekly_leads(
+        extraction = extract_weekly_leads_batched(
             weekly_input,
             config=config,
             llm_client=llm_client,
@@ -114,6 +114,7 @@ def run_weekly_analysis(
             "run_id": completed.id,
             "attempt": completed.attempt,
             "lead_count": len(leads),
+            "batch_count": extraction.batch_count,
             "retryable": False,
         }
     except Exception as exc:

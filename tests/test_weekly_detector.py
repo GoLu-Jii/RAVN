@@ -12,6 +12,11 @@ from app.events.models import Event
 from app.targets.models import Target
 from app.weekly.config import WeeklyConfig
 from app.weekly.detector import WeeklyRunBusy, run_weekly_analysis
+from app.weekly.lead_extraction import (
+    SYSTEM_PROMPT,
+    MESSAGE_OVERHEAD_BYTES,
+    weekly_lead_input_size_bytes,
+)
 from app.weekly.models import WeeklyLead, WeeklyLeadRun
 
 
@@ -30,7 +35,21 @@ class FakeLLM:
             raise self.error
         return SimpleNamespace(
             content=json.dumps(self.content),
-            provider="groq",
+            provider="openrouter",
+            model="openai/gpt-oss-120b",
+        )
+
+
+class SequencedFakeLLM:
+    def __init__(self, outputs):
+        self.outputs = list(outputs)
+        self.calls = []
+
+    def generate(self, **kwargs):
+        self.calls.append(kwargs)
+        return SimpleNamespace(
+            content=json.dumps(self.outputs.pop(0)),
+            provider="openrouter",
             model="openai/gpt-oss-120b",
         )
 
@@ -142,6 +161,86 @@ class WeeklyDetectorTests(unittest.TestCase):
         self.assertEqual(run.status, "succeeded")
         self.assertTrue(run.is_current)
 
+    def test_large_week_is_batched_and_duplicate_citations_are_merged(self):
+        second_event = self.add_event(
+            "second-event",
+            WEEK_START,
+            raw_content="Second week evidence",
+        )
+        self.session.commit()
+        single_event_sizes = [
+            weekly_lead_input_size_bytes({
+                "week_start": WEEK_START.isoformat(),
+                "events": [{
+                    "id": event.id,
+                    "collection_date": event.collection_date.isoformat(),
+                    "source": event.source_type,
+                    "raw_content": event.raw_content,
+                }],
+            })
+            for event in (self.current_event, second_event)
+        ]
+        llm = SequencedFakeLLM([
+            {"leads": [{
+                "title": "Platform investment",
+                "description": "Investment is supported by this week's evidence.",
+                "source_event_ids": [self.current_event.id],
+            }]},
+            {"leads": [{
+                "title": " Platform   investment ",
+                "description": "Investment is supported by this week's evidence.",
+                "source_event_ids": [second_event.id],
+            }]},
+        ])
+
+        result = run_weekly_analysis(
+            self.session,
+            target_id=self.target.id,
+            week_start=WEEK_START,
+            config=WeeklyConfig(weekly_input_byte_budget=max(single_event_sizes)),
+            embedder=lambda _: [[0.1] * 256],
+            llm_client=llm,
+        )
+
+        self.assertEqual(result["status"], "succeeded")
+        self.assertEqual(result["batch_count"], 2)
+        self.assertEqual(len(llm.calls), 2)
+        self.assertEqual(llm.calls[0]["provider"], "openrouter")
+        call_event_ids = [
+            json.loads(call["messages"][1]["content"])["events"][0]["id"]
+            for call in llm.calls
+        ]
+        self.assertEqual(call_event_ids, [self.current_event.id, second_event.id])
+        lead = self.session.query(WeeklyLead).one()
+        self.assertCountEqual(
+            lead.source_event_ids,
+            [self.current_event.id, second_event.id],
+        )
+
+    def test_event_larger_than_request_budget_fails_without_calling_llm(self):
+        empty_input_size = (
+            len(SYSTEM_PROMPT.encode("utf-8"))
+            + len(json.dumps({
+                "week_start": WEEK_START.isoformat(),
+                "events": [],
+            }).encode("utf-8"))
+            + MESSAGE_OVERHEAD_BYTES
+        )
+        llm = FakeLLM({"leads": []})
+
+        result = run_weekly_analysis(
+            self.session,
+            target_id=self.target.id,
+            week_start=WEEK_START,
+            config=WeeklyConfig(weekly_input_byte_budget=empty_input_size + 1),
+            llm_client=llm,
+        )
+
+        self.assertEqual(result["status"], "failed")
+        self.assertFalse(result["retryable"])
+        self.assertIn("exceeds the configured weekly request byte limit", result["error"])
+        self.assertEqual(llm.calls, [])
+
     def test_empty_week_calls_llm_with_empty_events_and_persists_null(self):
         self.session.query(Event).delete()
         self.session.commit()
@@ -237,7 +336,7 @@ class WeeklyDetectorTests(unittest.TestCase):
         run = self.session.query(WeeklyLeadRun).one()
         self.assertEqual(run.output_json, response)
         self.assertEqual(run.raw_output, json.dumps(response))
-        self.assertEqual(run.llm_provider, "groq")
+        self.assertEqual(run.llm_provider, "openrouter")
         self.assertEqual(len(llm.calls), 1)
 
     def test_busy_lock_rejects_overlap_without_creating_run(self):

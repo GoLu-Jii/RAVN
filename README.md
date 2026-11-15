@@ -13,7 +13,7 @@ UNDER CONSTRUCTION
 | **Authentication** | Completed | Sign-up, login, password hashing via bcrypt, JWT issuance, and protected routes with `HTTPBearer` support. |
 | **Target Onboarding** | Completed | Dynamic URL normalization (accepts `stripe.com` or `https://stripe.com`), automated source link discovery & classification via LLM. |
 | **Kundali Builder (Day-0)** | Completed | Multi-channel ingestion across GitHub (repos, languages, 52-week cadence curve), ATS/careers (API + HTML scrapers), technical blogs (RSS + trafilatura HTML article extractor), and web/social snapshots. |
-| **LLM Strategic Dossier** | Completed | Kundali synthesis requests `openai/gpt-oss-120b`, routed to Groq first with Gemini and OpenRouter fallbacks; produces executive summary, strategic themes, cross-signal correlations, and predictive outlook. |
+| **LLM Strategic Dossier** | Completed | Kundali synthesis requests `openai/gpt-oss-120b`, routed through the existing Groq/Gemini/OpenRouter fallback path; produces executive summary, strategic themes, cross-signal correlations, and predictive outlook. |
 | **Database Persistence** | Completed | SQLAlchemy and Alembic support SQLite for tests and the existing Supabase PostgreSQL database for the app. Stores users, targets, Kundali profiles, daily events/summaries, event embeddings, and weekly lead/run vectors; PostgreSQL uses pgvector for vector storage. |
 | **REST API** | Completed | FastAPI endpoints for onboarding and Kundali, plus daily collection, dated source highlights, event feed/detail, and saved summary dates (`/targets/{id}/daily/collect`, `/targets/{id}/daily/summaries`, `/targets/{id}/daily/summaries/dates`, `/targets/{id}/daily/events`). |
 | **Daily Collector** | Completed | Collects source-dated items for a requested Asia/Kolkata date, uses first-observed dates for new undated current-day ATS/blog listings, and checks recent missing or fully failed dates in background catch-up after startup; scheduled at 11:59 PM IST. |
@@ -35,7 +35,7 @@ JWT_SECRET_KEY=your-secret-key-here
 GITHUB_TOKEN=your-github-token-optional
 GROQ_API_KEY=your-groq-key
 GEMINI_API_KEY=your-gemini-key
-OPENROUTER_API_KEY=your-openrouter-key-optional
+OPENROUTER_API_KEY=your-openrouter-key
 VOYAGE_API_KEY=your-atlas-model-api-key
 # Optional; accepts your existing ENDPOINT variable too.
 VOYAGE_EMBEDDING_PROVIDER_ENDPOINT=https://ai.mongodb.com/v1/embeddings
@@ -124,7 +124,7 @@ RAVN includes offline automated `unittest` suites for daily collection and weekl
 
 - The weekly detector runs Mondays at 02:00 Asia/Kolkata, processes all non-baseline events collected during the prior Monday–Sunday week, and calls the configured model even when the week has no events. Empty weeks are saved with `leads: null` and no vectors. Lead text alone is embedded; week dates, target IDs, and source-event IDs remain structured metadata.
 - Signal detection runs Mondays at 04:00 Asia/Kolkata. It waits at 30-minute intervals for up to three total checks when weekly leads are still running, and allows one retry after a first retryable weekly failure. Signal input preserves the Kundali and current leads and is capped below 50,000 estimated tokens, trimming older historical candidates first.
-- Both detector stages use the configured Groq model with provider fallback disabled. Configure `GROQ_API_KEY` for live calls and `VOYAGE_API_KEY` for embeddings. Offline tests use fakes and do not consume provider quota. The weekly stage allows one retry after retryable failures.
+- Both active detector stages use the configured OpenRouter model with provider fallback disabled. Configure `OPENROUTER_API_KEY` for weekly lead and signal calls, `GROQ_API_KEY` and other configured keys for Kundali synthesis, and `VOYAGE_API_KEY` for embeddings. Offline tests use fakes and do not consume provider quota. The weekly stage allows one retry after retryable failures.
 
 - **Full offline gate**:
   ```bash

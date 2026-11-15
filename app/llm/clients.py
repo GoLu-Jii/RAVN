@@ -22,7 +22,28 @@ DEFAULT_GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
 
 class LLMError(Exception):
     """Raised when LLM providers fail."""
-    pass
+
+    def __init__(self, message: str, *, retryable: bool = True):
+        super().__init__(message)
+        self.retryable = retryable
+
+
+class LLMProviderError(RuntimeError):
+    """Provider request failure with an HTTP status for retry classification."""
+
+    def __init__(self, provider: str, status_code: int, detail: str):
+        super().__init__(f"{provider} API error (HTTP {status_code}): {detail}")
+        self.status_code = status_code
+
+
+def _provider_error_is_retryable(error: Exception) -> bool:
+    status_code = getattr(error, "status_code", None)
+    if status_code is None:
+        response = getattr(error, "response", None)
+        status_code = getattr(response, "status_code", None)
+    if status_code is not None:
+        return status_code in {408, 409, 425, 429} or status_code >= 500
+    return not isinstance(error, (ValueError, TypeError))
 
 
 class LLMMessage:
@@ -127,9 +148,7 @@ def _call_openrouter(
     response = requests.post(url, headers=headers, json=payload, timeout=timeout)
 
     if response.status_code != 200:
-        raise RuntimeError(
-            f"OpenRouter API error (HTTP {response.status_code}): {response.text}"
-        )
+        raise LLMProviderError("OpenRouter", response.status_code, response.text)
 
     data = response.json()
     choices = data.get("choices", [])
@@ -209,9 +228,7 @@ def _call_gemini(
     response = requests.post(url, headers=headers, json=payload, timeout=timeout)
 
     if response.status_code != 200:
-        raise RuntimeError(
-            f"Gemini API error (HTTP {response.status_code}): {response.text}"
-        )
+        raise LLMProviderError("Gemini", response.status_code, response.text)
 
     data = response.json()
     candidates = data.get("candidates", [])
@@ -392,6 +409,7 @@ class LLMClient:
             pipeline = pipeline[:1]
 
         errors = []
+        provider_errors = []
         for name, fn in pipeline:
             try:
                 resp = fn()
@@ -400,9 +418,16 @@ class LLMClient:
                 return resp
             except Exception as e:
                 errors.append(f"{name}: {e}")
+                provider_errors.append(e)
                 logger.warning(f"{name} failed: {e}. Falling back...")
 
-        raise LLMError(f"All LLM providers failed: {'; '.join(errors)}")
+        raise LLMError(
+            f"All LLM providers failed: {'; '.join(errors)}",
+            retryable=any(
+                _provider_error_is_retryable(error)
+                for error in provider_errors
+            ),
+        )
 
 
 # Global shared instance

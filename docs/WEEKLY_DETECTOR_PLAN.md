@@ -17,6 +17,7 @@ The Weekly Detector does **not** compare leads with previous weeks, perform cros
    - Its database event ID.
    - Its source name (`github`, `ats`, `blog`, or `web_social`).
    - Its `raw_content`.
+   The complete event set is split into sequential requests when necessary to stay within the configured weekly request byte budget; no events or raw content are dropped.
 5. Ask the LLM to return a structured collection of all leads found in the supplied evidence, from minor observations to major developments. Each lead cites one or more input event IDs.
 6. Validate the response and ensure cited IDs were part of the selected week's input.
 7. Embed the lead's textual content only. The week date and source IDs are metadata, not embedding text.
@@ -41,7 +42,7 @@ For example, the week beginning Monday `2026-11-09` includes collection dates fr
 
 ## 4. Input contract
 
-The initial baseline sends the complete selected week's eligible events in one LLM request. Chunking, summarization, and caching are deferred until the end-to-end baseline is working. If the single request exceeds the configured model context or provider limits, it must fail explicitly; the implementation must not silently omit events.
+The detector sends the complete selected week's eligible events, splitting them into sequential requests as needed to stay below `RAVN_WEEKLY_WEEKLY_INPUT_BYTE_BUDGET` (default 48,000 bytes including the system prompt and a request-overhead allowance). Every event appears in exactly one batch. Batch boundaries can prevent the model from connecting evidence that lands in different batches; batching therefore prioritizes complete processing over a single prompt's cross-event context. The backend merges exact duplicate leads (case/whitespace-normalized title and description) across batches and unions their event citations. It does not semantically deduplicate differently worded leads across batches. If a single event cannot fit by itself, the run fails explicitly rather than truncating or omitting evidence.
 
 Conceptual LLM input:
 
@@ -196,7 +197,7 @@ Implemented replacement behavior:
 
 - Comparing current leads with the prior 12 weeks. This is the separate Signal Detector's responsibility, described below.
 - RAG, similarity matching across weeks, signal grouping, trend detection, and signal classification.
-- Chunking, map/reduce analysis, and caching for large weeks.
+- Map/reduce analysis and caching for large weeks.
 - Dynamic “Sunday collection finished” coordination.
 - Shared-target deduplication across multiple users.
 - Distributed scheduler/lock behavior for multiple application instances.
@@ -213,6 +214,7 @@ The Weekly Detector baseline is ready to hand off to Signal Detector implementat
 5. [x] Empty weeks call the LLM with an empty list, store the `no_events` run and `leads: null`, and create no vectors.
 6. [x] A failed attempt is inspectable/retryable and does not corrupt the previous successful lead set.
 7. [x] Manual test runs work, and the fixed Monday 02:00 scheduled run invokes the same detector flow.
+8. [x] Large weeks are split into bounded requests without omitting events; citations are validated per batch and exact duplicate leads are consolidated.
 
 ## 11. Implementation boundary
 

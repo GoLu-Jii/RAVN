@@ -149,8 +149,8 @@ flowchart TD
     C -- no --> X
     C -- yes --> D[Select events by collection_date for Monday-Sunday]
     D --> E[Exclude baseline events and snapshot input]
-    E --> F[Call configured LLM, including empty weeks]
-    F --> G[Validate JSON and source event IDs]
+    E --> F[Split full snapshot into bounded batches; empty week is one empty batch]
+    F --> G[Call configured LLM per batch and validate citations]
     G --> H{Leads returned?}
     H -- yes --> I[Embed title and description]
     H -- no / null --> J[Create no lead vectors]
@@ -160,18 +160,19 @@ flowchart TD
     G -- invalid / provider error --> Z[Record failed attempt; retain prior current run]
     I -- embedding error --> Z
     L --> M[Return run status and lead count]
-    Z --> N[Return failed status and retryability]
+    Z --> N[Return HTTP 502 with failed status and retryability]
 ```
 
 Important behavior:
 
 - The weekly endpoint does not scrape current data; it analyzes events already stored by daily collection.
 - `week_start` is a Monday. Events are selected by `collection_date >= week_start AND collection_date < week_start + 7 days`; baseline events are excluded.
-- The LLM receives each selected event's database ID, collection date, source, and raw content. It returns leads with event IDs; every citation must belong to this exact selected-week input.
+- The LLM receives every selected event's database ID, collection date, source, and complete raw content. Large snapshots are split into sequential requests capped by a conservative 48,000-byte budget; no event is dropped. It returns leads with event IDs; every citation is validated against that batch's input. Exact duplicate title/description pairs are consolidated across batches with their citations combined.
 - An empty week still calls the LLM and expects `{"leads": null}`. A non-empty week with no supported leads returns `{"leads": []}`.
 - Only lead title and description are embedded. The week date, target, and source-event IDs remain structured metadata.
 - Failures are retained as run attempts and do not replace an earlier successful lead set. Successful reruns supersede the current run for that target/week.
-- The current baseline does not use historical retrieval, input compaction, or caching; those responsibilities are outside the Weekly Lead Detector.
+- The current baseline does not use historical retrieval, input compaction, or caching; those responsibilities are outside the Weekly Lead Detector. Batch boundaries can limit cross-event context. An event that cannot fit alone fails explicitly.
+- Persisted failed attempts return HTTP 502; provider 4xx responses are marked non-retryable.
 - The in-process weekly lock and APScheduler are not distributed coordination: multiple server processes need deployment-level coordination to avoid duplicate jobs or API-key rate-limit contention.
 
 ### 3.4 Signal detection

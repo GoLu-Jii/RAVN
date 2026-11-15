@@ -67,7 +67,7 @@ baseline behavior, past-date collection, per-source date parsing, and startup ca
 The analysis week is Monday through Sunday by Asia/Kolkata `collection_date`. The scheduled job runs Monday at 02:00 Asia/Kolkata for the prior closed week. Manual runs use the same pipeline and can select a Monday start date.
 
 - **Input:** All non-baseline events collected during the selected week, each with database ID, collection date, source, and `raw_content`.
-- **Process:** Send the full weekly snapshot to the configured LLM without historical retrieval or compaction. Validate JSON shape and ensure every cited event ID belongs to the selected-week input. Embed only each lead's title and description using Voyage.
+- **Process:** Send every event in the full weekly snapshot to the configured LLM, splitting into bounded requests when needed without omitting raw content. Validate citations per batch and merge exact duplicate title/description pairs across batches. Embed only each lead's title and description using Voyage.
 - **Output:** One vector row per lead, associated with target, Monday week date, and source event IDs. An empty week still calls the LLM and stores `{"leads": null}` without creating vectors; events with no supported leads use `{"leads": []}`.
 - **Failure safety:** Every attempt is retained. Failed runs never replace the previous current lead set; a successful rerun atomically supersedes it.
 - **API:** `POST /targets/{id}/weekly/run`, `GET /targets/{id}/weekly`, `GET /targets/{id}/weekly/{week_start}`, and `GET /targets/{id}/weekly/{week_start}/runs` (all owner-scoped).

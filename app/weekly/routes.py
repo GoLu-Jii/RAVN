@@ -136,9 +136,14 @@ def run_weekly(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     try:
-        return run_weekly_analysis(db, target_id=target_id, week_start=selected_week)
+        result = run_weekly_analysis(
+            db, target_id=target_id, week_start=selected_week
+        )
     except WeeklyRunBusy as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if result.get("status") == "failed":
+        raise HTTPException(status_code=502, detail=result)
+    return result
 
 
 @router.post(

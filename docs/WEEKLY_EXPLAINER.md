@@ -26,7 +26,9 @@ Every selected event is sent as an object containing:
 }
 ```
 
-The full input is saved on the run so it can be inspected later. There is no weekly compaction, chunking, or cache in this baseline. An oversized input must fail visibly rather than omit events.
+The full input is saved on the run so it can be inspected later. Requests include every selected event and its complete `raw_content`; when the week exceeds the configured 48,000-byte request ceiling, events are split into sequential batches. No event is omitted or truncated. Exact duplicate title/description pairs across batch outputs are consolidated and their event IDs combined. Because batches are processed independently, conceptually related leads with different wording may remain separate, and the model cannot connect evidence that was sent in different batches. If even one event cannot fit by itself, the attempt fails rather than omit that event.
+
+A provider 4xx error (such as the context-length rejection) is recorded as non-retryable. Failed runs are returned by the API as HTTP 502 with the run details, rather than `200 OK`.
 
 ## LLM response
 

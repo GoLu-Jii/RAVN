@@ -9,6 +9,47 @@ from app.llm import clients
 
 
 class LLMProviderRequestTests(unittest.TestCase):
+    def test_explicit_openrouter_provider_uses_only_openrouter(self):
+        expected = clients.LLMResponse("{}", "openrouter", "openai/gpt-oss-120b")
+        with (
+            patch("app.llm.clients._call_openrouter", return_value=expected) as openrouter,
+            patch("app.llm.clients._call_groq", side_effect=AssertionError("Groq called")) as groq,
+            patch("app.llm.clients._call_gemini", side_effect=AssertionError("Gemini called")) as gemini,
+        ):
+            response = clients.LLMClient().generate(
+                messages=[],
+                model="openai/gpt-oss-120b",
+                provider="openrouter",
+                allow_fallback=False,
+                no_fallbacks=True,
+            )
+
+        self.assertIs(response, expected)
+        openrouter.assert_called_once()
+        self.assertEqual(openrouter.call_args.kwargs["model"], "openai/gpt-oss-120b")
+        groq.assert_not_called()
+        gemini.assert_not_called()
+
+    def test_bad_request_is_not_retryable_and_rate_limit_is_retryable(self):
+        class ProviderError(Exception):
+            def __init__(self, status_code):
+                super().__init__(f"provider returned {status_code}")
+                self.status_code = status_code
+
+        for status_code, retryable in ((400, False), (429, True)):
+            with self.subTest(status_code=status_code):
+                with patch(
+                    "app.llm.clients._call_groq",
+                    side_effect=ProviderError(status_code),
+                ):
+                    with self.assertRaises(clients.LLMError) as raised:
+                        clients.LLMClient().generate(
+                            messages=[],
+                            model="openai/gpt-oss-120b",
+                            allow_fallback=False,
+                        )
+                self.assertEqual(raised.exception.retryable, retryable)
+
     def test_openrouter_request_and_response_contract(self):
         response = Mock(status_code=200)
         response.json.return_value = {
@@ -39,8 +80,25 @@ class LLMProviderRequestTests(unittest.TestCase):
             patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}),
             patch("app.llm.clients.requests.post", return_value=response),
         ):
-            with self.assertRaisesRegex(RuntimeError, "HTTP 429"):
+            with self.assertRaisesRegex(clients.LLMProviderError, "HTTP 429"):
                 clients._call_openrouter([{"role": "user", "content": "question"}])
+
+    def test_openrouter_bad_request_is_not_retryable(self):
+        response = Mock(status_code=400, text="invalid request")
+        with (
+            patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}),
+            patch("app.llm.clients.requests.post", return_value=response),
+        ):
+            with self.assertRaises(clients.LLMError) as raised:
+                clients.LLMClient().generate(
+                    messages=[{"role": "user", "content": "question"}],
+                    model="vendor/model",
+                    provider="openrouter",
+                    allow_fallback=False,
+                    no_fallbacks=True,
+                )
+
+        self.assertFalse(raised.exception.retryable)
 
     def test_gemini_request_converts_roles_and_extracts_text(self):
         response = Mock(status_code=200)

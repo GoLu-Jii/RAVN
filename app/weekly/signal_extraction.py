@@ -176,6 +176,7 @@ def extract_signals(
         response = client.generate(
             messages=messages,
             model=config.weekly_llm_model,
+            provider=config.weekly_llm_provider,
             response_format={"type": "json_object"},
             temperature=0.1,
             max_tokens=config.max_output_tokens,
@@ -186,7 +187,11 @@ def extract_signals(
         logger.exception("Signal Detector LLM request failed")
         raise SignalExtractionError(
             f"Signal Detector LLM request failed ({type(exc).__name__}).",
-            retryable=not isinstance(exc, (ValueError, TypeError)),
+            retryable=getattr(
+                exc,
+                "retryable",
+                not isinstance(exc, (ValueError, TypeError)),
+            ),
             model=config.weekly_llm_model,
         ) from exc
 

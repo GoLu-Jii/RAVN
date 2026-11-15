@@ -128,6 +128,26 @@ class WeeklyRouteTests(unittest.TestCase):
                 )
         self.assertEqual(busy.exception.status_code, 409)
 
+    def test_run_endpoint_returns_gateway_error_for_saved_failed_run(self):
+        from unittest.mock import patch
+
+        failure = {
+            "status": "failed",
+            "run_id": 42,
+            "retryable": False,
+            "error": "Weekly input exceeds the configured request byte limit.",
+        }
+        with patch("app.weekly.routes.run_weekly_analysis", return_value=failure):
+            with self.assertRaises(HTTPException) as raised:
+                routes.run_weekly(
+                    target_id=self.target.id,
+                    week_start=WEEK_START,
+                    current_user=self.owner,
+                    db=self.session,
+                )
+        self.assertEqual(raised.exception.status_code, 502)
+        self.assertEqual(raised.exception.detail, failure)
+
     def test_list_detail_and_run_history_are_owner_scoped(self):
         run = self.add_run()
         listed = routes.list_weekly_leads(self.target.id, self.owner, self.session)
