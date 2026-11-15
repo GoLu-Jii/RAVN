@@ -131,7 +131,6 @@ def _retrieve_historical_leads(
         {
             "id": item["id"],
             "week_start_date": item["week_start_date"].isoformat(),
-            "title": item["title"],
             "description": item["description"],
             "similarity": round(item["similarity"], 6),
             "matched_current_lead_ids": sorted(item["matched_current_lead_ids"]),
@@ -151,7 +150,6 @@ def _merge_history_matches(
             item = {
                 "id": lead.id,
                 "week_start_date": lead.week_start_date,
-                "title": lead.title,
                 "description": lead.description,
                 "similarity": similarity,
                 "matched_current_lead_ids": set(),
@@ -184,7 +182,6 @@ def _build_signal_input(
         "current_leads": [
             {
                 "id": lead.id,
-                "title": lead.title,
                 "description": lead.description,
                 "source_event_ids": lead.source_event_ids,
             }

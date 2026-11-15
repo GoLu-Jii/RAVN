@@ -112,7 +112,7 @@ RAVN includes offline automated `unittest` suites for daily collection and weekl
   Checks legacy result-table helpers. The active lead pipeline is covered by the detector tests above; apply the additive schema with `python -m alembic upgrade head`.
 
 - **Weekly lead API** (requires the same bearer token as the other target routes):
-  - `POST /targets/{target_id}/weekly/run?week_start=YYYY-MM-DD` runs a Monday-to-Sunday week; omit `week_start` for the last closed week.
+  - `POST /targets/{target_id}/weekly/run?week_start=YYYY-MM-DD` runs a Monday-to-Sunday week; omit `week_start` for the last closed week. The response includes the raw `llm_response` and `error` (`null` on success; `llm_response` is `null` if no model response was received).
   - `GET /targets/{target_id}/weekly` lists each week’s current lead run and leads.
   - `GET /targets/{target_id}/weekly/{week_start}` returns that week’s current run and leads.
   - `GET /targets/{target_id}/weekly/{week_start}/runs` lists attempts; add `include_input=true` only when you need the saved full input and raw output.

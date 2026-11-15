@@ -98,7 +98,7 @@ Every day, RAVN logs new activity from the target's footprint.
 
 ### Stage 3 — Weekly: Lead Extraction
 
-The baseline Weekly Lead Detector runs Monday at 02:00 Asia/Kolkata for the Monday–Sunday week that just closed, and it can also be run manually for any Monday-start week. It selects only non-baseline events by their `collection_date`, sends the complete selected-week event snapshot to the configured LLM in bounded batches when needed, validates every cited source event ID, embeds each lead's title and description, and stores the vectors with the Monday week date and source IDs.
+The baseline Weekly Lead Detector runs Monday at 02:00 Asia/Kolkata for the Monday–Sunday week that just closed, and it can also be run manually for any Monday-start week. It selects only non-baseline events by their `collection_date`, sends the complete selected-week event snapshot to the configured LLM in bounded batches when needed, validates every cited source event ID, embeds each concise lead description, and stores the vectors with the Monday week date and source IDs. Leads contain no separate title; when output capacity is tight, the prompt asks the model to return only the most significant complete leads.
 
 An empty week still reaches the LLM and is stored as `{"leads": null}` without lead vectors. A non-empty week with no supported leads is represented as `{"leads": []}`. Attempts are auditable; failed attempts preserve the previous successful lead set, while a successful rerun makes its own lead set current.
 

@@ -89,7 +89,7 @@ def run_weekly_analysis(
             llm_client=llm_client,
         )
         leads = extraction.output["leads"] or []
-        texts = [f'{lead["title"]}\n{lead["description"]}' for lead in leads]
+        texts = [lead["description"] for lead in leads]
         vectors = (embedder or embed_texts)(texts) if texts else []
         if len(vectors) != len(leads):
             raise EmbeddingProviderError(
@@ -116,6 +116,8 @@ def run_weekly_analysis(
             "lead_count": len(leads),
             "batch_count": extraction.batch_count,
             "retryable": False,
+            "llm_response": extraction.raw_output,
+            "error": None,
         }
     except Exception as exc:
         if run_id is None:
@@ -153,6 +155,11 @@ def run_weekly_analysis(
             "attempt": failed.attempt,
             "retryable": failed.retryable,
             "error": failed.error,
+            "llm_response": (
+                extraction.raw_output if extraction
+                else extraction_error.raw_output if extraction_error
+                else None
+            ),
         }
     finally:
         WEEKLY_LOCK.release()

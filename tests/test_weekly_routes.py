@@ -54,7 +54,6 @@ class WeeklyRouteTests(unittest.TestCase):
             self.session,
             run,
             output_json={"leads": [{
-                "title": "Lead",
                 "description": "Description",
                 "source_event_ids": [10],
             }]},
@@ -62,9 +61,8 @@ class WeeklyRouteTests(unittest.TestCase):
             llm_provider="groq",
             llm_model="model",
             embedding_model_id="voyage-4-lite",
-            prompt_version="weekly-leads-v1",
+            prompt_version="weekly-leads-v2",
             leads=[{
-                "title": "Lead",
                 "description": "Description",
                 "source_event_ids": [10],
             }],
@@ -74,7 +72,11 @@ class WeeklyRouteTests(unittest.TestCase):
     def test_run_endpoint_checks_owner_ready_state_and_monday(self):
         from unittest.mock import patch
 
-        response = {"status": "succeeded"}
+        response = {
+            "status": "succeeded",
+            "llm_response": '{"leads":[]}',
+            "error": None,
+        }
         with patch("app.weekly.routes.run_weekly_analysis", return_value=response) as run:
             self.assertEqual(routes.run_weekly(
                 target_id=self.target.id,
@@ -136,6 +138,7 @@ class WeeklyRouteTests(unittest.TestCase):
             "run_id": 42,
             "retryable": False,
             "error": "Weekly input exceeds the configured request byte limit.",
+            "llm_response": None,
         }
         with patch("app.weekly.routes.run_weekly_analysis", return_value=failure):
             with self.assertRaises(HTTPException) as raised:
@@ -152,12 +155,14 @@ class WeeklyRouteTests(unittest.TestCase):
         run = self.add_run()
         listed = routes.list_weekly_leads(self.target.id, self.owner, self.session)
         self.assertEqual(listed["items"][0]["id"], run.id)
-        self.assertEqual(listed["items"][0]["leads"][0]["title"], "Lead")
+        self.assertEqual(listed["items"][0]["leads"][0]["description"], "Description")
+        self.assertNotIn("title", listed["items"][0]["leads"][0])
 
         detail = routes.get_weekly_lead_run(
             self.target.id, WEEK_START, self.owner, self.session
         )
         self.assertEqual(detail["leads"][0]["source_event_ids"], [10])
+        self.assertNotIn("title", detail["leads"][0])
 
         minimal = routes.get_weekly_runs(
             self.target.id, WEEK_START, False, self.owner, self.session

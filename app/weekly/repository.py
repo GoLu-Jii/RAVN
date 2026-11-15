@@ -286,7 +286,6 @@ def complete_lead_run(
             target_id=run.target_id,
             week_start_date=run.week_start_date,
             lead_index=index,
-            title=lead["title"],
             description=lead["description"],
             source_event_ids=lead["source_event_ids"],
             embedding=vector,

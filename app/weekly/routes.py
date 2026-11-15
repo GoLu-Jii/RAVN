@@ -45,7 +45,6 @@ def _owned_target(target_id: int, user_id: int, db: Session):
 def _serialize_lead(lead: WeeklyLead) -> dict:
     return {
         "id": lead.id,
-        "title": lead.title,
         "description": lead.description,
         "source_event_ids": lead.source_event_ids,
     }

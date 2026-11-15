@@ -84,7 +84,7 @@ class SignalDetectorTests(unittest.TestCase):
         self.current_run = self.add_weekly_run(self.target.id, WEEK_START)
         self.current_lead = self.add_lead(
             self.current_run,
-            "Current lead",
+            "Current lead details",
             [1.0] + [0.0] * 255,
         )
         self.session.commit()
@@ -108,14 +108,13 @@ class SignalDetectorTests(unittest.TestCase):
         self.session.flush()
         return run
 
-    def add_lead(self, run, title, vector, *, index=0, description=None):
+    def add_lead(self, run, description, vector, *, index=0):
         lead = WeeklyLead(
             run_id=run.id,
             target_id=run.target_id,
             week_start_date=run.week_start_date,
             lead_index=index,
-            title=title,
-            description=description or f"{title} details",
+            description=description,
             source_event_ids=[],
             embedding=vector,
             embedding_model_id="voyage-4-lite",
@@ -155,18 +154,18 @@ class SignalDetectorTests(unittest.TestCase):
         )
         prior_leads = [
             self.add_lead(
-                prior_run, f"Prior {index}", [1.0] + [0.0] * 255, index=index
+                prior_run, f"Prior {index} details", [1.0] + [0.0] * 255, index=index
             )
             for index in range(4)
         ]
         other_run = self.add_weekly_run(
             self.other_target.id, WEEK_START - timedelta(weeks=1)
         )
-        self.add_lead(other_run, "Other target", [1.0] + [0.0] * 255)
+        self.add_lead(other_run, "Other target details", [1.0] + [0.0] * 255)
         too_old_run = self.add_weekly_run(
             self.target.id, WEEK_START - timedelta(weeks=13)
         )
-        self.add_lead(too_old_run, "Too old", [1.0] + [0.0] * 255)
+        self.add_lead(too_old_run, "Too old details", [1.0] + [0.0] * 255)
         self.session.commit()
 
         candidates = _retrieve_historical_leads(
@@ -187,7 +186,7 @@ class SignalDetectorTests(unittest.TestCase):
     def test_deduplicates_history_retrieved_for_multiple_current_leads(self):
         second_current = self.add_lead(
             self.current_run,
-            "Second current",
+            "Second current details",
             [0.9, 0.1] + [0.0] * 254,
             index=1,
         )
@@ -195,7 +194,7 @@ class SignalDetectorTests(unittest.TestCase):
             self.target.id, WEEK_START - timedelta(weeks=1)
         )
         prior = self.add_lead(
-            prior_run, "Related past lead", [1.0, 0.0] + [0.0] * 254
+            prior_run, "Related past lead details", [1.0, 0.0] + [0.0] * 254
         )
         self.session.commit()
 
@@ -219,7 +218,7 @@ class SignalDetectorTests(unittest.TestCase):
             self.target.id, WEEK_START - timedelta(weeks=1)
         )
         prior = self.add_lead(
-            prior_run, "Prior developer automation", [1.0] + [0.0] * 255
+            prior_run, "Prior developer automation details", [1.0] + [0.0] * 255
         )
         self.session.commit()
         output = {
@@ -272,13 +271,12 @@ class SignalDetectorTests(unittest.TestCase):
             "target": {"id": 1, "name": "Target"},
             "week_start": WEEK_START.isoformat(),
             "kundali": {"profile": "baseline"},
-            "current_leads": [{"id": 1, "title": "current", "description": "current details"}],
+            "current_leads": [{"id": 1, "description": "current details"}],
             "historical_candidates": [],
         }
         recent = {
             "id": 11,
             "week_start_date": (WEEK_START - timedelta(weeks=1)).isoformat(),
-            "title": "recent",
             "description": "r" * 100,
             "similarity": 0.2,
             "matched_current_lead_ids": [1],
@@ -286,7 +284,6 @@ class SignalDetectorTests(unittest.TestCase):
         older = {
             "id": 12,
             "week_start_date": (WEEK_START - timedelta(weeks=8)).isoformat(),
-            "title": "older",
             "description": "o" * 100,
             "similarity": 0.99,
             "matched_current_lead_ids": [1],

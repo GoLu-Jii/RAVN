@@ -111,6 +111,12 @@ class WeeklyDetectorTests(unittest.TestCase):
         )
         return result, fake_llm
 
+    def test_prompt_uses_description_only_and_prioritizes_within_output_limit(self):
+        self.assertIn('"description"', SYSTEM_PROMPT)
+        self.assertNotIn('"title"', SYSTEM_PROMPT)
+        self.assertIn("highest-priority complete leads that fit", SYSTEM_PROMPT)
+        self.assertIn("always finish valid JSON", SYSTEM_PROMPT)
+
     def test_selects_exact_collection_week_excluding_baselines(self):
         self.add_event("prior-week", WEEK_START - timedelta(days=1))
         self.add_event("last-day", WEEK_START + timedelta(days=6))
@@ -135,7 +141,6 @@ class WeeklyDetectorTests(unittest.TestCase):
     def test_leads_are_embedded_and_saved_with_week_and_citations(self):
         output = {
             "leads": [{
-                "title": "Platform investment",
                 "description": "The company is improving its platform.",
                 "source_event_ids": [self.current_event.id],
             }]
@@ -148,13 +153,16 @@ class WeeklyDetectorTests(unittest.TestCase):
 
         result, _ = self.run_with(output, embedder=embedder)
 
+        self.assertEqual(result["llm_response"], json.dumps(output))
+        self.assertIsNone(result["error"])
         self.assertEqual(result["lead_count"], 1)
         self.assertEqual(
             embedded_texts,
-            ["Platform investment\nThe company is improving its platform."],
+            ["The company is improving its platform."],
         )
         lead = self.session.query(WeeklyLead).one()
         self.assertEqual(lead.week_start_date, WEEK_START)
+        self.assertEqual(lead.description, "The company is improving its platform.")
         self.assertEqual(lead.source_event_ids, [self.current_event.id])
         self.assertEqual(lead.embedding, [0.25] * 256)
         run = self.session.query(WeeklyLeadRun).one()
@@ -182,13 +190,11 @@ class WeeklyDetectorTests(unittest.TestCase):
         ]
         llm = SequencedFakeLLM([
             {"leads": [{
-                "title": "Platform investment",
                 "description": "Investment is supported by this week's evidence.",
                 "source_event_ids": [self.current_event.id],
             }]},
             {"leads": [{
-                "title": " Platform   investment ",
-                "description": "Investment is supported by this week's evidence.",
+                "description": "  Investment is supported by this week's evidence.  ",
                 "source_event_ids": [second_event.id],
             }]},
         ])
@@ -257,23 +263,24 @@ class WeeklyDetectorTests(unittest.TestCase):
         embedder.assert_not_called()
 
     def test_rejects_citation_outside_selected_week(self):
-        result, _ = self.run_with({
+        response = {
             "leads": [{
-                "title": "Unsupported",
                 "description": "Not grounded in the selected week.",
                 "source_event_ids": [99999],
             }]
-        })
+        }
+        result, _ = self.run_with(response)
 
         self.assertEqual(result["status"], "failed")
         self.assertFalse(result["retryable"])
+        self.assertEqual(result["llm_response"], json.dumps(response))
+        self.assertIn("outside the selected week", result["error"])
         self.assertEqual(self.session.query(WeeklyLead).count(), 0)
         self.assertFalse(self.session.query(WeeklyLeadRun).one().is_current)
 
     def test_failed_rerun_does_not_replace_previous_success(self):
         first, _ = self.run_with({
             "leads": [{
-                "title": "First lead",
                 "description": "Evidence from the first run.",
                 "source_event_ids": [self.current_event.id],
             }]
@@ -294,7 +301,6 @@ class WeeklyDetectorTests(unittest.TestCase):
     def test_successful_rerun_supersedes_previous_success(self):
         first, _ = self.run_with({
             "leads": [{
-                "title": "First lead",
                 "description": "Evidence from the first run.",
                 "source_event_ids": [self.current_event.id],
             }]
@@ -311,16 +317,33 @@ class WeeklyDetectorTests(unittest.TestCase):
         self.assertEqual(self.session.query(WeeklyLead).count(), 1)
 
     def test_nonretryable_llm_validation_failure_is_recorded(self):
-        result, _ = self.run_with({"wrong_shape": []})
+        response = {"wrong_shape": []}
+        result, _ = self.run_with(response)
         run = self.session.query(WeeklyLeadRun).one()
         self.assertEqual(result["status"], "failed")
         self.assertFalse(result["retryable"])
+        self.assertEqual(result["llm_response"], json.dumps(response))
+        self.assertIn("invalid JSON or lead data", result["error"])
         self.assertEqual(run.status, "failed")
+
+    def test_malformed_llm_json_is_returned_with_validation_error(self):
+        class RawResponseLLM:
+            def generate(self, **kwargs):
+                return SimpleNamespace(
+                    content='{"leads":[{"description":"unfinished',
+                    provider="openrouter",
+                    model="openai/gpt-oss-120b",
+                )
+
+        result, _ = self.run_with(None, llm=RawResponseLLM())
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["llm_response"], '{"leads":[{"description":"unfinished')
+        self.assertIn("Unterminated string", result["error"])
 
     def test_embedding_failure_preserves_llm_output_for_audit(self):
         response = {
             "leads": [{
-                "title": "Auditable lead",
                 "description": "Evidence from the selected week.",
                 "source_event_ids": [self.current_event.id],
             }]

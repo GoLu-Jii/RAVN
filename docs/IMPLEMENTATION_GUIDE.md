@@ -94,9 +94,9 @@ GitHub daily collection currently stores commits. Pull requests and dependency-c
 The Weekly Lead Detector handles one target and one Monday–Sunday collection week. It runs on Monday at 02:00 Asia/Kolkata for the last closed week; the owner-scoped manual endpoint remains available for testing. It selects `events` by `collection_date >= Monday AND collection_date < next Monday` and excludes `is_baseline=true`. It does not retrieve prior weeks or include the Kundali.
 
 1. Save a run attempt and snapshot the selected event IDs, collection dates, source names, and `raw_content`.
-2. Send every event in the complete selected-week snapshot to the configured weekly LLM, splitting sequentially into requests under the configured byte ceiling when needed. Require JSON in the form `{"leads":[{"title":"...","description":"...","source_event_ids":[1]}]}`. Every cited ID must belong to that batch's input. Exact duplicate title/description pairs across batches are consolidated and citations combined; no event content is discarded.
+2. Send every event in the complete selected-week snapshot to the configured weekly LLM, splitting sequentially into requests under the configured byte ceiling when needed. Require JSON in the form `{"leads":[{"description":"...","source_event_ids":[1]}]}`. Every cited ID must belong to that batch's input. Exact duplicate descriptions across batches are consolidated and citations combined; no event content is discarded. The prompt asks the model to prioritize the most business-significant leads and return fewer concise leads rather than exceed its output-token limit.
 3. For an empty week, still call the LLM and require `{"leads":null}`. Store the successful `no_events` attempt, but create no lead rows or vectors. A non-empty week with no leads uses `{"leads":[]}`.
-4. Embed each lead's `title + newline + description` with the hosted Voyage model. Dates, target IDs, and source-event IDs are stored as metadata, not embedded.
+4. Embed each lead's description with the hosted Voyage model. Dates, target IDs, and source-event IDs are stored as metadata, not embedded.
 5. In one database transaction, store leads/vectors and mark the new successful run current. A failed run leaves the previous successful lead set current. A successful rerun supersedes the earlier current run for that target/week.
 
 There is no weekly input compaction or cache. Batches include the full system prompt and use a conservative 48,000-byte default ceiling. If one event cannot fit by itself, the run fails without omitting or truncating it. Invalid JSON, invalid citations, provider errors, or embedding errors are recorded as explicit failures. Provider 4xx responses are non-retryable. Failed runs return HTTP 502 with the saved attempt details rather than a success-shaped 200. The process lock and APScheduler are process-local. A single retry is scheduled after retryable failures; startup recovery also processes the last closed week even when there were no daily events, so the empty-week contract is honored.
@@ -105,7 +105,7 @@ There is no weekly input compaction or cache. Batches include the full system pr
 
 All routes require authentication and enforce target ownership:
 
-- `POST /targets/{target_id}/weekly/run?week_start=YYYY-MM-DD` — run a Monday-start week; defaults to the last closed week.
+- `POST /targets/{target_id}/weekly/run?week_start=YYYY-MM-DD` — run a Monday-start week; defaults to the last closed week. The response includes raw `llm_response` and `error` fields; `error` is `null` on success, and `llm_response` is `null` when the model did not return text.
 - `GET /targets/{target_id}/weekly` — list each week's current lead run.
 - `GET /targets/{target_id}/weekly/{week_start}` — current run and leads.
 - `GET /targets/{target_id}/weekly/{week_start}/runs?include_input=true` — attempt history; full audit payload is optional.
@@ -149,7 +149,7 @@ These scripts exercise the earlier weekly signal-analysis pipeline, not the acti
 | `daily_source_summaries` | Per-target/date/source status, highlight, counts, and ATS/blog coverage breakdown |
 | `event_embeddings` | Versioned 256-dimensional Voyage vector per event/model/preparation version |
 | `weekly_lead_runs` | Every weekly lead extraction attempt, input/output, status, and model metadata |
-| `weekly_leads` | Lead text, citations, Monday week date, and 256-dimensional vector |
+| `weekly_leads` | Lead descriptions, citations, Monday week date, and 256-dimensional vector |
 | `signal_detection_runs` | Signal extraction attempts, evidence input, model metadata, status, and retry information |
 | `detected_signals` | Validated signal text/types/confidence and cited current/historical weekly lead IDs |
 | `weekly_runs`, `weekly_results`, `weekly_signals` | Legacy signal-analysis tables; retained but no longer written by the active weekly detector |

@@ -26,7 +26,7 @@ Every selected event is sent as an object containing:
 }
 ```
 
-The full input is saved on the run so it can be inspected later. Requests include every selected event and its complete `raw_content`; when the week exceeds the configured 48,000-byte request ceiling, events are split into sequential batches. No event is omitted or truncated. Exact duplicate title/description pairs across batch outputs are consolidated and their event IDs combined. Because batches are processed independently, conceptually related leads with different wording may remain separate, and the model cannot connect evidence that was sent in different batches. If even one event cannot fit by itself, the attempt fails rather than omit that event.
+The full input is saved on the run so it can be inspected later. Requests include every selected event and its complete `raw_content`; when the week exceeds the configured 48,000-byte request ceiling, events are split into sequential batches. No event is omitted or truncated. Exact duplicate descriptions across batch outputs are consolidated and their event IDs combined. Because batches are processed independently, conceptually related leads with different wording may remain separate, and the model cannot connect evidence that was sent in different batches. If even one event cannot fit by itself, the attempt fails rather than omit that event.
 
 A provider 4xx error (such as the context-length rejection) is recorded as non-retryable. Failed runs are returned by the API as HTTP 502 with the run details, rather than `200 OK`.
 
@@ -38,7 +38,6 @@ The configured weekly model receives the weekly input and is asked to return:
 {
   "leads": [
     {
-      "title": "Company is expanding its data infrastructure team",
       "description": "Two new roles focus on streaming data and large-scale storage.",
       "source_event_ids": [124, 128]
     }
@@ -46,7 +45,7 @@ The configured weekly model receives the weekly input and is asked to return:
 }
 ```
 
-Each lead must have a non-empty title, a non-empty description, and one or more distinct event IDs present in the selected-week input. The response is rejected if its JSON shape is invalid or if a lead cites any event outside this input.
+Each lead contains a concise, non-empty description and one or more distinct event IDs present in the selected-week batch. There is no separate title field. The model is instructed to prioritize business-significant leads and, if its output-token budget is tight, return fewer complete leads rather than truncate the JSON. This instruction is best-effort; the model may still reach its generation limit. The response is rejected if its JSON shape is invalid or if a lead cites any event outside this input.
 
 For an empty week, the LLM is still called and must return:
 
@@ -61,11 +60,10 @@ The run status is `no_events`; no lead rows or vectors are created. If events ex
 The hosted Voyage model embeds only:
 
 ```text
-{title}
 {description}
 ```
 
-The title and description are separated by a newline. Week dates, target IDs, run IDs, and source-event IDs are structured metadata and are not embedded.
+Week dates, target IDs, run IDs, and source-event IDs are structured metadata and are not embedded.
 
 The additive migration creates:
 
