@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.auth.models import User
-from app.auth.routes import get_current_user
+from app.auth.dependencies import get_current_user
 from app.daily.collectors import collect_target_events
 from app.db.database import get_db
 from app.events.models import DailySourceSummary, Event

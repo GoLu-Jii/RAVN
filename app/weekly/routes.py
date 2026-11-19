@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.auth.models import User
-from app.auth.routes import get_current_user
+from app.auth.dependencies import get_current_user
 from app.db.database import get_db
 from app.weekly.detector import WeeklyRunBusy, run_weekly_analysis
 from app.weekly.models import (
