@@ -65,12 +65,14 @@ The hosted Voyage model embeds only:
 
 Week dates, target IDs, run IDs, and source-event IDs are structured metadata and are not embedded.
 
-The additive migration creates:
+The weekly-storage migration creates:
 
 - `weekly_lead_runs`: an attempt record, exact input event IDs and JSON snapshot, LLM output, status, model metadata, and failure details.
 - `weekly_leads`: one row per lead, including its text, cited event IDs, target ID, Monday `week_start_date`, embedding model, and 256-dimensional vector.
 
 PostgreSQL stores vectors as pgvector `vector(256)`; SQLite uses JSON-backed vectors for development and tests. The application stores vectors in the configured RAVN database; the Voyage API only computes them.
+
+The follow-up migration `c72f8a0b91de` removes the redundant `title` column from `weekly_leads`; existing title values are dropped when that migration is applied.
 
 Every attempt is retained. A failed run does not change the current successful lead set. Lead rows and a successful run are committed in one transaction; a successful rerun marks the previous current run as superseded and becomes current. Earlier successful data remains available through its run history.
 

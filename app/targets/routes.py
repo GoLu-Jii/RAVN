@@ -1,4 +1,4 @@
-from app.auth.routes import get_current_user
+from app.auth.dependencies import get_current_user
 
 from fastapi import Depends, HTTPException, APIRouter, BackgroundTasks, Query
 from pydantic import BaseModel, field_validator

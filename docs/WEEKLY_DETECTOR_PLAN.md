@@ -91,7 +91,6 @@ Recommended non-empty response:
       "source_event_ids": [124, 128]
     },
     {
-      "title": "Repository activity indicates a new command-line feature",
       "description": "A commit adds configuration and command handling for the new capability.",
       "source_event_ids": [123]
     }
@@ -158,14 +157,13 @@ One record per generated lead:
 | `embedding` | Hosted Voyage vector for the lead text. |
 | `embedding_model_id`, `created_at` | Vector provenance and creation time. |
 
-These tables are implemented by an additive Alembic migration. Source-event IDs are stored as JSON and validated against the selected-week input before persistence. PostgreSQL uses `vector(256)` and SQLite uses JSON-backed vectors.
+These tables were introduced by the weekly-storage Alembic migration. A follow-up migration, `c72f8a0b91de`, removes the redundant `weekly_leads.title` column. Source-event IDs are stored as JSON and validated against the selected-week input before persistence. PostgreSQL uses `vector(256)` and SQLite uses JSON-backed vectors.
 
 ### Vector text
 
-Embed only stable lead text, initially:
+Embed the concise lead description:
 
 ```text
-{title}
 {description}
 ```
 
