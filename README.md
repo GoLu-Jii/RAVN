@@ -1,99 +1,98 @@
 # RAVN
 
-**See where competitors are heading, before they announce it.**
+### Follow companies. See what's changing.
 
-RAVN is a competitive intelligence engine for tech and AI companies. It continuously watches public signals across code, hiring, engineering content, and product updates—then connects them over time to surface evidence-backed clues about what a company may be building next.
+**RAVN is a company activity tracker for the tech ecosystem.** It monitors public engineering, hiring, and product activity, connects developments across time, and turns scattered signals into source-backed updates.
 
-Instead of repeatedly searching for updates, **add a company once and let RAVN build the context.**
+Think of it as a news feed built around **companies you care about**—not headlines scraped from the same outlets, but changes observed in their public footprint.
 
-> **Status:** Active development. The backend supports company onboarding, historical profiling, daily collection, weekly lead extraction, and signal detection. The web dashboard, narrated reports, and PDF export are not yet available.
+> **In development:** The data collection and historical signal-analysis backend is working. The public company directory, following, personalized feed, and AI-curated briefings are the next product layer.
 
 ## Why RAVN?
 
-A competitor's next move rarely appears in a single announcement. It may show up as an unfamiliar repository, a cluster of engineering hires, or a series of subtle product changes.
+Important company updates don't arrive in one place. A new repository appears on GitHub. A team starts hiring for a particular stack. An engineering blog publishes a deep dive. A product page changes.
 
-These clues are scattered, easy to miss, and difficult to interpret without history. RAVN brings them together:
+Individually, these are small updates. Together, they can tell a useful story about **what a company is doing now**.
 
-- **Continuous monitoring, not one-off searches.** Track a company's public footprint over time.
-- **Context, not just updates.** Establish a baseline and compare new activity with what came before.
-- **Connections, not isolated facts.** Look for patterns across sources and across weeks.
-- **Evidence, not unsupported predictions.** Keep findings linked to the events and leads that support them.
+RAVN brings them into one timeline, adds historical context, and keeps the underlying evidence accessible—without pretending to know a company's private plans.
 
-## How it works
+## From public activity to company intelligence
 
 ```text
-Add a company
-      ↓
-Discover & confirm its public sources
-      ↓
-Day 0 · Kundali       Build an initial company profile and activity baseline
-      ↓
-Daily · Radar         Collect and preserve new public events
-      ↓
-Weekly · Leads        Extract noteworthy developments with source citations
-      ↓
-Weekly · Signals      Compare current leads with the baseline and prior weeks
+                 Add a tech company
+                         │
+                         ▼
+              Discover its public sources
+                         │
+                         ▼
+          Kundali · Build a company baseline
+                         │
+                         ▼
+          Daily Radar · Capture new activity
+                         │
+                         ▼
+          Weekly Leads · Surface developments
+                         │
+                         ▼
+       Signal Detection · Connect past and present
+                         │
+                         ▼
+    Intelligence Desk · Research, verify, publish  [planned]
+                         │
+                         ▼
+       Company briefings + personalized feed      [planned]
 ```
 
-### The intelligence RAVN builds
+### What RAVN tracks today
 
-| Stage | What it gives you |
+| Source | What RAVN observes |
 | --- | --- |
-| **Kundali** | A starting picture of the company's public technology footprint, engineering activity, hiring, and strategic focus. |
-| **Daily Radar** | A chronological record of new commits, job postings, engineering articles, and tracked web updates, with source details. |
-| **Weekly Leads** | Significant observations extracted from that week's collected evidence, with validated references to source events. |
-| **Signals** | Potential strategic patterns, informed by the company baseline and similar leads from up to 12 previous weeks, with qualitative confidence and supporting citations. |
-
-**Example (illustrative, not a live RAVN result)**
-
-> **Potential expansion into real-time data infrastructure**  
-> New engineering roles and related repository activity may point to investment in streaming capabilities.  
-> *Evidence: hiring + GitHub activity · Confidence: medium*
-
-RAVN presents these as **evidence-backed hypotheses**, not certainty about a company's private roadmap.
-
-## What RAVN monitors
-
-| Source | Public activity tracked |
-| --- | --- |
-| **GitHub** | Repositories, language mix, commit history, and new commits |
-| **Careers / ATS** | Job openings from supported boards and company career pages |
+| **GitHub** | Public repositories, language mix, commit history, and new commits |
+| **Careers** | Public job postings from supported ATS platforms and company career pages |
 | **Engineering blogs** | Technical articles and engineering announcements |
-| **Web / product updates** | Changes in configured public pages and update sources |
+| **Web updates** | Changes on configured public pages |
 
-Coverage depends on what each company makes public. RAVN uses available sources rather than assuming every company has the same footprint.
+RAVN keeps source records, not just AI-written summaries. Coverage varies by company and source availability.
 
-## Built for traceability
+### What makes the updates useful
 
-RAVN stores underlying events, keeps a history of weekly analysis attempts, and validates the citations returned by its LLM stages. Weekly leads are embedded for historical retrieval; signal detection compares new leads with relevant earlier ones rather than treating each week in isolation.
+- **A baseline, not a blank slate.** RAVN builds an initial company profile (*Kundali*) before tracking new activity.
+- **A timeline, not disconnected headlines.** Daily Radar records new events and preserves their source context.
+- **Patterns over time.** Weekly analysis extracts cited leads and compares them with related leads from the preceding **12 weeks** and the company baseline.
+- **Traceable conclusions.** Signal outputs reference saved leads and evidence; they are observations and interpretations, **not claims about an unannounced roadmap**.
 
-The current backend is built with **Python, FastAPI, SQLAlchemy, PostgreSQL/pgvector, Voyage embeddings, and hosted LLMs**. SQLite is also supported for local development and tests.
+## Where RAVN is heading
 
-For architecture, data models, operational details, and API contracts, see [System Design](docs/SYSTEM_DESIGN.md) and the [Implementation Guide](docs/IMPLEMENTATION_GUIDE.md).
+**Follow companies, not duplicate trackers.** The planned public directory will let anyone add a tech company and let others follow the same company. Its monitoring and analysis will be shared; each user will get a feed of the companies they follow.
 
-## Try RAVN locally
+**A weekly briefing worth reading.** The planned **Intelligence Desk** will combine RAVN's detected signals with additional official-company research and relevant industry context. It will assemble stories, check evidence, and publish source-linked briefings. YouTube and other public channels are potential additions where reliable access is available.
 
-**Requirements:** Python 3.11 and API credentials for the features you want to run.
+The editorial rule is simple: **report what was observed, explain the context, and distinguish facts from interpretation.**
 
-1. Clone this repository, install dependencies, and copy `.env.example` to `.env`.
+## Built with
 
-   ```bash
-   python -m pip install -r requirements.txt
-   ```
+**Python · FastAPI · SQLAlchemy · PostgreSQL/pgvector · Voyage embeddings · Hosted LLMs**
 
-2. Configure `DATABASE_URL` and `JWT_SECRET_KEY`. Weekly analysis requires `OPENROUTER_API_KEY` and `VOYAGE_API_KEY`; onboarding/Kundali synthesis uses a configured LLM provider such as Groq. An optional `GITHUB_TOKEN` helps with GitHub API access. See `.env.example` for available settings.
+The backend currently provides authenticated APIs for target onboarding, company baselines, daily events, weekly leads, and historical signal detection. SQLite is also supported for local development and tests.
 
-3. Apply migrations and start the API.
+For internals, see [System Design](docs/SYSTEM_DESIGN.md) and the [Implementation Guide](docs/IMPLEMENTATION_GUIDE.md).
 
-   ```bash
-   python -m alembic upgrade head
-   uvicorn app.main:app --reload
-   ```
+## Run locally
 
-4. Open **[http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)** to sign up, authenticate, add a target company, inspect its Kundali and daily events, and run weekly lead/signal analysis.
+Requires Python 3.11 and API keys for the integrations you use.
 
-The default local database is SQLite. For PostgreSQL with pgvector, configure `DATABASE_URL` before running migrations; details are in the [Implementation Guide](docs/IMPLEMENTATION_GUIDE.md).
+```bash
+# Clone the repository, then from its root:
+python -m pip install -r requirements.txt
+# Copy .env.example to .env and configure your credentials
+python -m alembic upgrade head
+uvicorn app.main:app --reload
+```
+
+Set `DATABASE_URL` and `JWT_SECRET_KEY` in `.env`. For weekly intelligence, configure `OPENROUTER_API_KEY` and `VOYAGE_API_KEY`; onboarding and Kundali synthesis need a supported LLM provider key. An optional `GITHUB_TOKEN` improves GitHub API access.
+
+Open **[localhost:8000/docs](http://127.0.0.1:8000/docs)** to try the current API. The web experience is still under development.
 
 ---
 
-**RAVN — watch it. Connect the signals.**
+**RAVN — Follow the companies. Understand the changes.**
