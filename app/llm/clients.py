@@ -140,9 +140,12 @@ def _call_openrouter(
         "max_tokens": max_tokens,
     }
 
-    is_json = bool(response_format and response_format.get("type") == "json_object")
-    if is_json:
-        payload["response_format"] = {"type": "json_object"}
+    is_json = bool(response_format)
+    if response_format:
+        payload["response_format"] = response_format
+        if response_format.get("type") == "json_schema":
+            # Do not silently route to an endpoint that ignores the schema.
+            payload["provider"] = {"require_parameters": True}
 
     timeout = kwargs.get("timeout", 25)
     response = requests.post(url, headers=headers, json=payload, timeout=timeout)
@@ -212,9 +215,11 @@ def _call_gemini(
         "thinkingConfig": {"thinkingBudget": kwargs.get("thinking_budget", 0)},
     }
 
-    is_json = bool(response_format and response_format.get("type") == "json_object")
+    is_json = bool(response_format)
     if is_json:
         generation_config["responseMimeType"] = "application/json"
+        if response_format.get("type") == "json_schema":
+            generation_config["responseJsonSchema"] = response_format["json_schema"]["schema"]
 
     payload: Dict[str, Any] = {
         "contents": contents,

@@ -22,6 +22,7 @@ from app.weekly.repository import (
 )
 from app.weekly.signal_extraction import (
     PROMPT_VERSION,
+    SIGNAL_RESPONSE_FORMAT,
     SYSTEM_PROMPT,
     SignalExtraction,
     SignalExtractionError,
@@ -200,7 +201,8 @@ def _fit_signal_input(
     candidates = list(signal_input["historical_candidates"])
     base_input = {**signal_input, "historical_candidates": []}
     base_text = json.dumps(base_input, ensure_ascii=False)
-    base_size = len((SYSTEM_PROMPT + base_text).encode("utf-8"))
+    schema_size = len(json.dumps(SIGNAL_RESPONSE_FORMAT).encode("utf-8"))
+    base_size = len((SYSTEM_PROMPT + base_text).encode("utf-8")) + schema_size + 512
     if base_size > config.signal_input_byte_budget:
         raise SignalInputError(
             "Kundali and current-week leads exceed the Signal Detector's input limit."
@@ -208,12 +210,12 @@ def _fit_signal_input(
 
     fitted = {**signal_input, "historical_candidates": candidates}
     serialized = json.dumps(fitted, ensure_ascii=False)
-    size = len((SYSTEM_PROMPT + serialized).encode("utf-8"))
+    size = len((SYSTEM_PROMPT + serialized).encode("utf-8")) + schema_size + 512
     while size > config.signal_input_byte_budget and candidates:
         candidates.pop()
         fitted = {**signal_input, "historical_candidates": list(candidates)}
         serialized = json.dumps(fitted, ensure_ascii=False)
-        size = len((SYSTEM_PROMPT + serialized).encode("utf-8"))
+        size = len((SYSTEM_PROMPT + serialized).encode("utf-8")) + schema_size + 512
     return fitted, size
 
 

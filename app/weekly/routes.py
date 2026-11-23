@@ -119,7 +119,12 @@ def _serialize_signal_run(
     return payload
 
 
-@router.post("/run", summary="Run weekly lead extraction", description="Runs a single target/week; defaults to the last fully closed Monday-Sunday week.")
+@router.post(
+    "/run",
+    summary="Run weekly lead extraction",
+    description="Runs a single target/week; defaults to the last fully closed Monday-Sunday week.",
+    responses={502: {"description": "Weekly lead extraction failed"}},
+)
 def run_weekly(
     target_id: int,
     week_start: date | None = Query(None, description="Monday date (YYYY-MM-DD); defaults to the last closed week"),
@@ -149,6 +154,7 @@ def run_weekly(
     "/signals/run",
     summary="Run signal detection",
     description="Runs signal analysis for a week with a successful current weekly-lead run.",
+    responses={502: {"description": "Signal detection failed"}},
 )
 def run_signals(
     target_id: int,
@@ -167,11 +173,14 @@ def run_signals(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     try:
-        return run_signal_detection(
+        result = run_signal_detection(
             db, target_id=target_id, week_start=selected_week
         )
     except (SignalDetectorBusy, WeeklyLeadsUnavailable) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if result.get("status") == "failed":
+        raise HTTPException(status_code=502, detail=result)
+    return result
 
 
 @router.get("/{week_start}/signals", summary="Get current weekly signals")
