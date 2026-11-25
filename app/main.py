@@ -4,6 +4,7 @@ from app.targets.routes import router as targets_router
 from app.events.routes import router as daily_router
 from app.scheduler.jobs import create_scheduler, start_catch_up_thread, start_weekly_catch_up_thread
 from app.weekly.routes import router as weekly_router
+from app.intelligence_desk.routes import router as intelligence_router
 
 app = FastAPI(
     title="RAVN Competitive Intelligence API",
@@ -66,6 +67,7 @@ app.include_router(auth_router, prefix="/auth", tags=["1. Authentication"])
 app.include_router(targets_router, prefix="/targets", tags=["2. Targets & Kundali"])
 app.include_router(daily_router)
 app.include_router(weekly_router)
+app.include_router(intelligence_router)
 '''
 ok
 '''

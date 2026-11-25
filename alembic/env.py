@@ -13,6 +13,7 @@ from app.targets.models import Target
 from app.kundali.models import Kundali
 from app.events.models import Event, EventEmbedding, DailySourceCheckpoint
 from app.weekly.models import WeeklyRun, WeeklyResult, WeeklySignal
+from app.intelligence_desk.models import IntelligenceRun, IntelligenceBriefing
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

@@ -25,6 +25,7 @@ beautifulsoup4
 feedparser
 trafilatura
 requests
+youtube-transcript-api
 
 # PDF export
 weasyprint
@@ -33,3 +34,9 @@ weasyprint
 python-dotenv
 pydantic
 pydantic-settings
+
+
+# agents
+langchain
+langgraph
+langchain-groq

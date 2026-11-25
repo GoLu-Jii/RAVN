@@ -39,8 +39,9 @@ class ConfirmTarget(BaseModel):
     ats_url: str | None = None
     blog_url: str | None = None
     web_social_url: str | None = None
+    youtube_url: str | None = None
 
-    @field_validator("website_url", "github_url", "ats_url", "blog_url", "web_social_url", mode="before")
+    @field_validator("website_url", "github_url", "ats_url", "blog_url", "web_social_url", "youtube_url", mode="before")
     @classmethod
     def normalize_all_urls(cls, v):
         return _clean_url_field(v)
@@ -102,6 +103,7 @@ def confirm(
         ats_url=target.ats_url,
         blog_url=target.blog_url,
         web_social_url=target.web_social_url,
+        youtube_url=target.youtube_url,
         status="building",
     )
     db.add(new_target)
@@ -121,6 +123,7 @@ def confirm(
             return {
                 "id": new_target.id,
                 "name": new_target.name,
+                "youtube_url": new_target.youtube_url,
                 "status": new_target.status,
                 "kundali": _serialize_kundali(kundali, new_target),
             }
@@ -141,7 +144,12 @@ def confirm(
         blog_url=new_target.blog_url,
     )
 
-    return {"id": new_target.id, "name": new_target.name, "status": new_target.status}
+    return {
+        "id": new_target.id,
+        "name": new_target.name,
+        "youtube_url": new_target.youtube_url,
+        "status": new_target.status,
+    }
 
 
 @router.get(
