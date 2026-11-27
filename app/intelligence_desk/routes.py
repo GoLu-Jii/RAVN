@@ -1,6 +1,9 @@
 """Owner-scoped Company Scout run and published briefing endpoints."""
 
+import json
 from datetime import date, datetime, timedelta, timezone
+from urllib.parse import urlsplit, urlunsplit
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
@@ -16,6 +19,7 @@ from app.weekly.windows import last_closed_week, require_monday
 
 
 router = APIRouter(prefix="/api/targets/{target_id}", tags=["5. Intelligence"])
+REPORTING_TZ = ZoneInfo("Asia/Kolkata")
 
 
 def _owned_target(db: Session, target_id: int, user_id: int) -> Target:
@@ -32,17 +36,136 @@ def _message_text(message) -> str:
     return str(content)
 
 
-def _execution_result(agent_state: dict) -> dict:
-    """Keep the final answer and lightweight tool-call trace, not raw page text."""
+def _tool_payload(message):
+    content = getattr(message, "content", "")
+    if isinstance(content, (dict, list)):
+        return content
+    if isinstance(content, str):
+        try:
+            return json.loads(content)
+        except (TypeError, ValueError):
+            return {"text": content[:300]}
+    return {"text": str(content)[:300]}
+
+
+def _compact_tool_result(message) -> dict:
+    payload = _tool_payload(message)
+    if not isinstance(payload, dict):
+        return {"type": "tool_result", "name": getattr(message, "name", None), "status": "unknown"}
+
+    result = {
+        "type": "tool_result",
+        "name": getattr(message, "name", None),
+        "status": payload.get("status", "unknown"),
+    }
+    for key in ("url", "title", "published_at", "count", "diagnostic", "pages_checked", "pages_read", "cached", "truncated", "language", "language_code", "video_id"):
+        if key in payload:
+            result[key] = payload[key]
+
+    # Keep useful provenance in the run trace without persisting whole pages/transcripts.
+    if isinstance(payload.get("links"), list):
+        result["links"] = [
+            {"url": item.get("url"), "text": item.get("text", "")[:160]}
+            for item in payload["links"] if isinstance(item, dict) and item.get("url")
+        ]
+    if isinstance(payload.get("items"), list):
+        result["items"] = [
+            {key: item[key] for key in ("video_id", "title", "url", "published_at") if key in item}
+            for item in payload["items"] if isinstance(item, dict)
+        ]
+    return result
+
+
+def _publication_day(value) -> date | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    raw = value.strip()
+    try:
+        return date.fromisoformat(raw)
+    except ValueError:
+        pass
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.date()
+    return parsed.astimezone(REPORTING_TZ).date()
+
+
+def _url_key(value: str) -> str:
+    parsed = urlsplit(value)
+    return urlunsplit((parsed.scheme.lower(), parsed.netloc.lower(), parsed.path.rstrip("/") or "/", parsed.query, ""))
+
+
+def _review_output(final_output: str, trace: list[dict], week_start: date, week_end: date) -> dict:
+    """Annotate findings for review; never reject or rewrite the model's answer."""
+    try:
+        parsed = json.loads(final_output)
+    except (TypeError, ValueError):
+        return {"json_parsed": False, "findings": []}
+    if not isinstance(parsed, dict) or not isinstance(parsed.get("findings", []), list):
+        return {"json_parsed": True, "findings": [], "note": "Expected a findings list to review."}
+
+    checked_urls = set()
+    for item in trace:
+        if item.get("type") == "tool_result" and item.get("status") in {"checked", "partial"}:
+            if item.get("url"):
+                checked_urls.add(_url_key(item["url"]))
+            for video in item.get("items", []):
+                if video.get("url"):
+                    checked_urls.add(_url_key(video["url"]))
+
+    reviewed = []
+    for index, finding in enumerate(parsed.get("findings", [])):
+        if not isinstance(finding, dict):
+            reviewed.append({"finding_index": index, "date_status": "unknown", "citation_status": []})
+            continue
+        published_day = _publication_day(finding.get("published_at"))
+        if published_day is None:
+            date_status = "unknown"
+        elif week_start <= published_day <= week_end:
+            date_status = "in_period"
+        else:
+            date_status = "outside_period"
+        citations = finding.get("source_urls", [])
+        if isinstance(citations, str):
+            citations = [citations]
+        citation_status = []
+        for citation in citations if isinstance(citations, list) else []:
+            citation_status.append({
+                "url": citation,
+                "status": "returned_by_checked_tool" if isinstance(citation, str) and _url_key(citation) in checked_urls else "not_seen_in_checked_tool_results",
+            })
+        reviewed.append({"finding_index": index, "date_status": date_status, "citation_status": citation_status})
+    return {"json_parsed": True, "findings": reviewed}
+
+
+def _execution_result(agent_state: dict, week_start: date | None = None, week_end: date | None = None) -> dict:
+    """Keep the final answer, compact tool trace, and non-blocking review annotations."""
     messages = agent_state.get("messages", [])
     trace = []
     for message in messages:
         for call in getattr(message, "tool_calls", []) or []:
             trace.append({"type": "tool_call", "name": call.get("name"), "args": call.get("args", {})})
+        if getattr(message, "type", None) == "ai":
+            metadata = getattr(message, "response_metadata", {}) or {}
+            model_name = metadata.get("model_name") or metadata.get("model")
+            if model_name:
+                trace.append({
+                    "type": "model_response",
+                    "model": model_name,
+                    "provider": metadata.get("model_provider"),
+                })
         if getattr(message, "type", None) == "tool":
-            trace.append({"type": "tool_result", "name": getattr(message, "name", None), "status": "completed"})
+            trace.append(_compact_tool_result(message))
     final_output = _message_text(messages[-1]) if messages else ""
-    return {"final_output": final_output, "trace": trace}
+    return {
+        "final_output": final_output,
+        "trace": trace,
+        "review": _review_output(final_output, trace, week_start, week_end)
+        if week_start and week_end else None,
+    }
 
 
 def _execute_run(run_id: int, target_id: int, company_name: str, website_url: str,
@@ -69,7 +192,7 @@ def _execute_run(run_id: int, target_id: int, company_name: str, website_url: st
             weekly_leads=weekly_leads,
             lead_context_status=lead_context_status,
         )
-        result = _execution_result(state)
+        result = _execution_result(state, week_start, week_end)
         db = SessionLocal()
         try:
             run = db.query(IntelligenceRun).filter_by(id=run_id, target_id=target_id).first()

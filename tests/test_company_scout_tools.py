@@ -122,6 +122,35 @@ class CompanyScoutToolTests(unittest.TestCase):
         result = webpage.func("https://other.example/")
         self.assertEqual(result["status"], "rejected")
 
+    def test_webpage_allows_agent_chosen_path_on_target_host(self):
+        webpage = self.make_tools()[2]
+        page = ("https://company.example/newsroom", b"<html><body>Newsroom</body></html>", "utf-8")
+        with patch.object(tools_module, "_fetch_html", return_value=page):
+            result = webpage.func("https://company.example/newsroom")
+        self.assertEqual(result["status"], "checked")
+        self.assertIn("Newsroom", result["text"])
+
+    def test_repeated_webpage_read_uses_cached_result(self):
+        webpage = self.make_tools()[2]
+        page = ("https://company.example/", b"<html><body>Company home</body></html>", "utf-8")
+        with patch.object(tools_module, "_fetch_html", return_value=page) as fetch:
+            first = webpage.func("https://company.example/")
+            second = webpage.func("https://company.example/")
+        self.assertEqual(first["status"], "checked")
+        self.assertTrue(second["cached"])
+        fetch.assert_called_once()
+
+    def test_page_limit_returns_status_without_raising(self):
+        webpage = self.make_tools()[2]
+        first_page = ("https://company.example/", b"<html><body>Home</body></html>", "utf-8")
+        with patch.object(tools_module, "MAX_UNIQUE_PAGE_READS", 1), patch.object(
+            tools_module, "_fetch_html", return_value=first_page
+        ):
+            first = webpage.func("https://company.example/")
+            second = webpage.func("https://company.example/news")
+        self.assertEqual(first["status"], "checked")
+        self.assertEqual(second["status"], "limit_reached")
+
     def test_webpage_rejects_dropped_social_sources(self):
         self.assertFalse(tools_module._safe_http_url("https://instagram.com/company"))
         self.assertFalse(tools_module._safe_http_url("https://x.com/company"))

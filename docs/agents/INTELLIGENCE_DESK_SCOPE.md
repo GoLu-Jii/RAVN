@@ -64,7 +64,9 @@ These later roles may be coordinated with LangGraph when their workflows are rea
 - `GET /api/targets/{id}/intelligence/runs/{run_id}` returns its status and result.
 - `GET /api/targets/{id}/briefings` returns published briefings only. A Scout run does not publish a briefing.
 - If no successful Weekly Lead run exists for the week, Scout may still run without leads and should report that context gap. A successful run with zero leads is valid empty context.
+- Run results preserve the Scout's answer and include a compact tool trace plus non-blocking date and citation review hints. Review hints do not reject findings or fail a run.
+- Scout uses OpenRouter only, with three ordered free model choices for tool-capable requests. Other RAVN agents may continue using their existing provider setup.
 
 ## 6. Success criteria
 
-Company Scout should choose useful pages and videos instead of calling every tool in a fixed sequence, cite original source URLs, preserve unknown dates as unknown, and continue when one source is unavailable. Existing daily and weekly analysis must remain unchanged.
+Company Scout should choose useful pages and videos instead of calling every tool in a fixed sequence, cite original source URLs, preserve unknown dates as unknown, and continue when one source is unavailable. It can choose same-site paths; external pages must be linked from a page it read. Page caching and a generous unique-page cap prevent repeat fetching and runaway browsing without choosing pages for the agent. Existing daily and weekly analysis must remain unchanged.

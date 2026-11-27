@@ -1,5 +1,6 @@
 import unittest
 from datetime import date
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from fastapi import BackgroundTasks
@@ -94,6 +95,52 @@ class IntelligenceRouteTests(unittest.TestCase):
         self.assertEqual(response["status"], "queued")
         self.assertEqual(background.tasks[0].args[-2], [])
         self.assertEqual(background.tasks[0].args[-1], "unavailable")
+
+    def test_execution_result_reports_actual_tool_status_and_review_without_rejecting_findings(self):
+        tool_result = SimpleNamespace(
+            type="tool",
+            name="read_webpage",
+            content='{"status":"checked","url":"https://company.example/news","title":"News","published_at":null,"text":"long page body"}',
+            tool_calls=[],
+        )
+        final = SimpleNamespace(
+            type="ai",
+            content='{"summary":"Useful context","findings":[{"observation":"Undated update","source_urls":["https://company.example/news"],"published_at":null}]}',
+            tool_calls=[],
+        )
+        result = routes._execution_result({
+            "messages": [tool_result, final],
+        }, date(2026, 11, 16), date(2026, 11, 22))
+
+        self.assertEqual(result["trace"][0]["status"], "checked")
+        self.assertNotIn("text", result["trace"][0])
+        self.assertEqual(result["review"]["findings"][0]["date_status"], "unknown")
+        self.assertEqual(
+            result["review"]["findings"][0]["citation_status"][0]["status"],
+            "returned_by_checked_tool",
+        )
+        self.assertIn("Undated update", result["final_output"])
+
+    def test_review_marks_out_of_period_publication_and_keeps_model_output(self):
+        final = SimpleNamespace(
+            type="ai",
+            content='{"summary":"Context","findings":[{"source_urls":[],"published_at":"2026-11-22T20:00:00Z"}]}',
+            tool_calls=[],
+        )
+        result = routes._execution_result({
+            "messages": [final],
+        }, date(2026, 11, 16), date(2026, 11, 22))
+        # 20:00Z is Nov 23 in Kolkata, beyond the selected week.
+        self.assertEqual(result["review"]["findings"][0]["date_status"], "outside_period")
+        self.assertEqual(result["final_output"], final.content)
+
+    def test_unparseable_final_json_is_preserved_and_only_review_is_unavailable(self):
+        final = SimpleNamespace(type="ai", content="Useful but not JSON", tool_calls=[])
+        result = routes._execution_result({
+            "messages": [final],
+        }, WEEK_START, WEEK_START.replace(day=22))
+        self.assertEqual(result["final_output"], "Useful but not JSON")
+        self.assertFalse(result["review"]["json_parsed"])
 
 
 if __name__ == "__main__":

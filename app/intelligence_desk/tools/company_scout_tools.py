@@ -1,6 +1,7 @@
 """Small, read-only tools for the target-scoped Company Scout agent."""
 
 from datetime import date, datetime, timedelta, timezone
+from copy import deepcopy
 import ipaddress
 import os
 import re
@@ -23,6 +24,7 @@ REQUEST_TIMEOUT = 10
 MAX_RESPONSE_BYTES = 1_000_000
 MAX_PAGE_TEXT = 8_000
 MAX_PAGE_LINKS = 30
+MAX_UNIQUE_PAGE_READS = 20
 MAX_VIDEO_PAGES = 10
 MAX_TRANSCRIPT_CHARS = 12_000
 MAX_REDIRECTS = 5
@@ -202,6 +204,9 @@ def build_company_scout_tools(target_id: int):
     target_website = target["website_url"]
     youtube_url = target["youtube_url"]
     allowed_page_urls = {_url_key(target_website)}
+    target_host = (urlsplit(target_website).hostname or "").lower().rstrip(".")
+    page_cache: dict[str, dict[str, Any]] = {}
+    attempted_page_urls: set[str] = set()
     weekly_video_ids: set[str] = set()
 
     @tool("get_weekly_youtube_videos")
@@ -307,10 +312,25 @@ def build_company_scout_tools(target_id: int):
 
     @tool("read_webpage")
     def read_webpage(url: str) -> dict[str, Any]:
-        """Read the target website or a link previously returned by this tool."""
+        """Read a page on the target website or an external link returned by this tool."""
         key = _url_key(url)
-        if key not in allowed_page_urls:
+        if key in page_cache:
+            result = deepcopy(page_cache[key])
+            result["cached"] = True
+            return result
+
+        requested_host = (urlsplit(url).hostname or "").lower().rstrip(".")
+        is_target_site = requested_host == target_host
+        if key not in allowed_page_urls and not is_target_site:
             return {"status": "rejected", "url": url, "diagnostic": "url_not_from_target_website_or_a_returned_link"}
+        if key not in attempted_page_urls and len(attempted_page_urls) >= MAX_UNIQUE_PAGE_READS:
+            return {
+                "status": "limit_reached",
+                "url": url,
+                "pages_read": len(attempted_page_urls),
+                "diagnostic": "unique_page_read_limit_reached",
+            }
+        attempted_page_urls.add(key)
         try:
             final_url, body, encoding = _fetch_html(url)
             html = body.decode(encoding, errors="replace")
@@ -320,7 +340,9 @@ def build_company_scout_tools(target_id: int):
             title = soup.title.get_text(" ", strip=True) if soup.title else ""
             text = soup.get_text(" ", strip=True)
             if not text:
-                return {"status": "unavailable", "url": final_url, "diagnostic": "no_static_html_text"}
+                result = {"status": "unavailable", "url": final_url, "diagnostic": "no_static_html_text"}
+                page_cache[key] = result
+                return deepcopy(result)
 
             links = []
             for anchor in soup.find_all("a", href=True):
@@ -337,7 +359,7 @@ def build_company_scout_tools(target_id: int):
                     break
 
             allowed_page_urls.add(_url_key(final_url))
-            return {
+            result = {
                 "status": "checked",
                 "url": final_url,
                 "title": title,
@@ -346,7 +368,12 @@ def build_company_scout_tools(target_id: int):
                 "truncated": len(text) > MAX_PAGE_TEXT,
                 "links": links,
             }
+            page_cache[key] = result
+            page_cache[_url_key(final_url)] = result
+            return deepcopy(result)
         except Exception as exc:
-            return {"status": "unavailable", "url": url, "diagnostic": type(exc).__name__}
+            result = {"status": "unavailable", "url": url, "diagnostic": type(exc).__name__}
+            page_cache[key] = result
+            return deepcopy(result)
 
     return [get_weekly_youtube_videos, get_youtube_transcript, read_webpage]

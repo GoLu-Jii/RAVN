@@ -39,4 +39,4 @@ pydantic-settings
 # agents
 langchain
 langgraph
-langchain-groq
+langchain-openai
